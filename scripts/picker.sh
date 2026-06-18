@@ -19,10 +19,11 @@ emit_rows() {
     at=$(tmux show-options -qv -t "$s" @claude_state_at 2>/dev/null)
     path=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
     case "$state" in
-    waiting) icon=$'\033[33m●\033[0m waiting' rank=0 ;; # yellow - needs input
-    idle) icon=$'\033[32m●\033[0m idle   ' rank=1 ;;    # green  - done, your turn
-    working) icon=$'\033[31m●\033[0m working' rank=3 ;; # red    - busy, leave it
-    *) icon=$'\033[90m●\033[0m   ?    ' rank=2 ;;       # grey   - unknown (no hook yet)
+    blocked) icon='🔴 blocked  — needs input'         rank=0 ;;
+    done)    icon='🔵 done     — finished, unseen'    rank=1 ;;
+    idle)    icon='🟢 idle     — done and seen'       rank=2 ;;
+    working) icon='🟡 working  — actively running'    rank=3 ;;
+    *)       icon='⚪ unknown  — no hook yet'          rank=2 ;;
     esac
     if [ -n "$at" ]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
     # rank \t session \t icon \t age \t path   (rank/session hidden via --with-nth)

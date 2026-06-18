@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Record a Claude Code session's state on its tmux session, for the picker.
-# Wire this into Claude Code hooks (see README):  state.sh <working|waiting|idle>
+# Wire this into Claude Code hooks (see README):  state.sh <blocked|working|done|idle>
 #
 # Claude Code hooks inherit the Claude process environment, so $TMUX_PANE is set
 # whenever Claude runs inside tmux. Outside tmux this is a no-op.

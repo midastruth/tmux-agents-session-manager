@@ -11,7 +11,7 @@ end up with a dozen of them and no way to tell which are finished without openin
 each one. This plugin gives you:
 
 - 🔢 **A central picker** (`prefix` + `u`) listing every running Claude session.
-- 🟢 **Live status** per session — `working` / `waiting` / `idle` — driven by
+- 🟢 **Live status** per session — `blocked` / `working` / `done` / `idle` — driven by
   Claude Code hooks, so you instantly see which need you.
 - 👁️ **A live preview** of each session's screen right in the picker.
 - 🎯 **Smart jump** — selecting a session switches your client to the window it
@@ -72,7 +72,7 @@ Inside the picker:
 | `ctrl-x`                  | Kill the highlighted session                                              |
 | `↑` / `↓`, type to filter | fzf navigation                                                            |
 
-Sessions needing your attention (`waiting`, `idle`) sort to the top.
+Sessions needing your attention (`blocked`, `done`) sort to the top.
 
 ## Status setup (optional, recommended)
 
@@ -102,7 +102,7 @@ Claude Code settings (`~/.claude/settings.json`), merging into any existing
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh waiting"
+            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh blocked"
           }
         ]
       }
@@ -113,7 +113,7 @@ Claude Code settings (`~/.claude/settings.json`), merging into any existing
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh waiting"
+            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh blocked"
           }
         ]
       }
@@ -124,7 +124,7 @@ Claude Code settings (`~/.claude/settings.json`), merging into any existing
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh idle"
+            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh done"
           }
         ]
       }
@@ -135,12 +135,12 @@ Claude Code settings (`~/.claude/settings.json`), merging into any existing
 
 The state machine:
 
-| Event                            | State        | Meaning                   |
-| -------------------------------- | ------------ | ------------------------- |
-| `UserPromptSubmit`               | 🔴 `working` | Busy — leave it           |
-| `Notification` (permission)      | 🟡 `waiting` | Needs permission          |
-| `PreToolUse` (`AskUserQuestion`) | 🟡 `waiting` | Asking you a question     |
-| `Stop`                           | 🟢 `idle`    | Turn finished — your move |
+| Event                            | State        | Meaning                              |
+| -------------------------------- | ------------ | ------------------------------------ |
+| `UserPromptSubmit`               | 🟡 `working` | Actively running                     |
+| `Notification` (permission)      | 🔴 `blocked` | Needs input or approval              |
+| `PreToolUse` (`AskUserQuestion`) | 🔴 `blocked` | Asking you a question                |
+| `Stop`                           | 🔵 `done`    | Work finished, you haven't seen yet  |
 
 > Claude Code reloads `hooks` dynamically — no restart needed. Sessions that are
 > already running start reporting status on their next event once the hooks are
