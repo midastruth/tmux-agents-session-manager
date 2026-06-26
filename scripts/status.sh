@@ -71,11 +71,15 @@ seg() {
   fi
 }
 
-out="$sigil "
-out+="$(seg "$blocked" "$icon_blocked" "$col_blocked")"
-out+="$(seg "$working" "$icon_working" "$col_working")"
-out+="$(seg "$done_"   "$icon_done"    "$col_done")"
-[ "$show_idle" = on ] && out+="$(seg "$idle" "$icon_idle" "$col_idle")"
+segments=""
+segments+="$(seg "$blocked" "$icon_blocked" "$col_blocked")"
+segments+="$(seg "$working" "$icon_working" "$col_working")"
+segments+="$(seg "$done_"   "$icon_done"    "$col_done")"
+[ "$show_idle" = on ] && segments+="$(seg "$idle" "$icon_idle" "$col_idle")"
+
+# No visible state segments -> print nothing, so the whole badge (sigil
+# included) disappears instead of leaving a lone "π" stuck in the bar.
+[ -z "$segments" ] && exit 0
 
 # Trim a single trailing space.
-printf '%s' "${out% }"
+printf '%s%s' "$sigil " "${segments% }"
