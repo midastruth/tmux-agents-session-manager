@@ -1,178 +1,144 @@
-# tmux-claude-session-manager
+# tmux-pi-session-manager
 
-[![screenshot](./docs/screenshot.jpg)](https://youtu.be/NnTV6r4l5D0)
+Run many [Pi](https://pi.dev) coding-agent sessions across your projects, each
+inside its own tmux session — then list them, preview them, see which ones are
+working vs. finished, and jump back to any session from one popup.
 
-Run many [Claude Code](https://claude.com/claude-code) sessions across your
-projects, each in its own tmux session — then **list them, see which are done
-vs. still working, and jump to one** from a single popup.
+This is a tmux plugin for people who launch `pi` per project directory. It keeps
+one nested tmux session per directory and gives you a central picker for all of
+them.
 
-If you launch Claude per-directory (one nested session per project), you quickly
-end up with a dozen of them and no way to tell which are finished without opening
-each one. This plugin gives you:
+## Features
 
-- 🔢 **A central picker** (`prefix` + `u`) listing every running Claude session.
-- 🟢 **Live status** per session — `blocked` / `working` / `done` / `idle` — driven by
-  Claude Code hooks, so you instantly see which need you.
-- 👁️ **A live preview** of each session's screen right in the picker.
-- 🎯 **Smart jump** — selecting a session switches your client to the window it
-  was launched from, then resumes it in a popup over it.
-- 🚀 **A launcher** (`prefix` + `y`) that opens/attaches a Claude session for the
+- 🔢 **Central picker** (`prefix` + `u`) listing every managed Pi tmux session, plus panes where `pi` was started manually.
+- 🟡 **Live status** per session: `working` / `done` / `idle` via the bundled Pi
+  extension.
+- 👁️ **Live preview** of each session's screen in the picker.
+- 🎯 **Smart jump** back to the window where the Pi session was launched.
+- 🚀 **Launcher** (`prefix` + `y`) to open or attach the Pi session for the
   current directory.
-- ❌ **Quick kill** (`ctrl-x`) of finished sessions from the picker.
-
-Status is optional: without the hooks the picker still lists, previews, jumps,
-and kills — sessions just show `?` instead of a color.
+- ❌ **Quick kill** (`ctrl-x`) from the picker.
 
 ## Prerequisites
 
-- **tmux ≥ 3.2** (for `display-popup`)
-- **[fzf](https://github.com/junegunn/fzf)** — the picker UI
-- **[Claude Code](https://claude.com/claude-code)** CLI (the `claude` command)
+- **tmux ≥ 3.2** for `display-popup`
+- **fzf** for the picker UI
+- **Pi** CLI (`pi` command)
 - bash; macOS or Linux
 
-## Install (tpm)
-
-Add to `~/.tmux.conf` (or `~/.config/tmux/tmux.conf`):
+For best Pi keyboard behavior inside tmux, Pi recommends:
 
 ```tmux
-set -g @plugin 'craftzdog/tmux-claude-session-manager'
+set -g extended-keys on
+set -g extended-keys-format csi-u
 ```
 
-Then hit `prefix` + <kbd>I</kbd> to install.
+`extended-keys-format csi-u` requires tmux 3.5+. On tmux 3.2–3.4, use only
+`set -g extended-keys on`.
 
-> **Keybinding note:** by default the plugin binds `prefix` + `y` (launch) and
-> `prefix` + `u` (list). If your config binds those elsewhere, either change the
-> options below, or make sure the plugin loads **after** your own bindings (put
-> `run '~/.tmux/plugins/tpm/tpm'` _after_ them) so the one you want wins.
+## Install
 
 ### Manual install
 
 ```sh
-git clone https://github.com/craftzdog/tmux-claude-session-manager ~/clone/path
+git clone <this-repo-url> ~/clone/path/tmux-pi-session-manager
 ```
 
-Add to `~/.tmux.conf`, then reload (`prefix` + <kbd>r</kbd> or `tmux source ~/.tmux.conf`):
+Add to `~/.tmux.conf`, then reload tmux:
 
 ```tmux
-run-shell ~/clone/path/claude_session_manager.tmux
+run-shell ~/clone/path/tmux-pi-session-manager/pi_session_manager.tmux
 ```
+
+### tpm
+
+After publishing/renaming the repo, use the normal tpm form:
+
+```tmux
+set -g @plugin 'yourname/tmux-pi-session-manager'
+```
+
+Then press `prefix` + <kbd>I</kbd>.
 
 ## Usage
 
-| Key            | Action                                                                          |
-| -------------- | ------------------------------------------------------------------------------- |
-| `prefix` + `y` | Launch (or re-attach to) a Claude session for the current directory, in a popup |
-| `prefix` + `u` | Open the session picker                                                         |
+| Key            | Action                                                                   |
+| -------------- | ------------------------------------------------------------------------ |
+| `prefix` + `y` | Launch or re-attach to a Pi session for the current directory in a popup |
+| `prefix` + `u` | Open the Pi session picker                                               |
 
 Inside the picker:
 
 | Key                       | Action                                                                    |
 | ------------------------- | ------------------------------------------------------------------------- |
-| `enter`                   | Jump to the session (switches to its origin window, resumes in the popup) |
-| `ctrl-x`                  | Kill the highlighted session                                              |
+| `enter`                   | Jump to the session/pane; managed sessions resume in the popup            |
+| `ctrl-x`                  | Kill a managed session, or send `Ctrl-C` to a manual `pi` pane            |
 | `↑` / `↓`, type to filter | fzf navigation                                                            |
 
-Sessions needing your attention (`blocked`, `done`) sort to the top.
+Sessions marked `done` sort near the top so finished work is easy to find.
+Manual panes are detected when their current tmux command is `pi`, so a `pi`
+started by typing `pi` in a normal tmux pane can also be found with
+`prefix` + `u`.
 
-## Status setup (optional, recommended)
+## Status extension
 
-Status comes from [Claude Code hooks](https://code.claude.com/docs/en/hooks)
-that stamp each session's state onto its tmux session. Add the following to your
-Claude Code settings (`~/.claude/settings.json`), merging into any existing
-`hooks` block. Adjust the path if your plugins live elsewhere (e.g.
-`~/.tmux/plugins/...`):
+By default, the launcher runs Pi with the bundled extension:
 
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh working"
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "matcher": "permission_prompt",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh blocked"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh blocked"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.config/tmux/plugins/tmux-claude-session-manager/scripts/state.sh done"
-          }
-        ]
-      }
-    ]
-  }
-}
+```sh
+pi -e /path/to/tmux-pi-session-manager/extensions/tmux-state.ts
 ```
 
-The state machine:
+The extension writes these tmux options on the nested Pi session:
 
-| Event                            | State        | Meaning                              |
-| -------------------------------- | ------------ | ------------------------------------ |
-| `UserPromptSubmit`               | 🟡 `working` | Actively running                     |
-| `Notification` (permission)      | 🔴 `blocked` | Needs input or approval              |
-| `PreToolUse` (`AskUserQuestion`) | 🔴 `blocked` | Asking you a question                |
-| `Stop`                           | 🔵 `done`    | Work finished, you haven't seen yet  |
+| Pi event           | tmux state | Meaning              |
+| ------------------ | ---------- | -------------------- |
+| `session_start`    | `idle`     | Pi is open           |
+| `agent_start`      | `working`  | Pi is processing     |
+| `agent_end`        | `done`     | The turn finished and has not been opened yet |
+| `session_shutdown` | `idle`     | Pi is shutting down  |
 
-> Claude Code reloads `hooks` dynamically — no restart needed. Sessions that are
-> already running start reporting status on their next event once the hooks are
-> added.
+Opening a `done` session from the picker or launcher marks it `idle` again.
+
+If you override `@pi_command` and do not load the extension, the picker still
+lists, previews, jumps, and kills sessions; status may stay `idle` or show
+`unknown`.
 
 ## Options
 
-Set any of these before the plugin loads (defaults shown):
+Set any of these before the plugin loads:
 
 ```tmux
-set -g @claude_launch_key     'y'        # prefix key: launch/open for current dir
-set -g @claude_list_key       'u'        # prefix key: open the picker
-set -g @claude_command        'claude'   # command run in new sessions
-set -g @claude_session_prefix 'claude-'  # tmux session name prefix
-set -g @claude_popup_width     '90%'     # popup width
-set -g @claude_popup_height    '90%'     # popup height
+set -g @pi_launch_key     'y'        # prefix key: launch/open for current dir
+set -g @pi_list_key       'u'        # prefix key: open the picker
+set -g @pi_command        'pi'       # command run in new sessions; default loads bundled extension
+set -g @pi_session_prefix 'pi-'      # tmux session name prefix
+set -g @pi_popup_width    '90%'      # popup width
+set -g @pi_popup_height   '90%'      # popup height
+```
+
+The actual default for `@pi_command` is equivalent to:
+
+```tmux
+set -g @pi_command "pi -e '/path/to/tmux-pi-session-manager/extensions/tmux-state.ts'"
 ```
 
 ## How it works
 
-- The **launcher** creates a detached `claude-<hash-of-dir>` tmux session running
-  `claude`, records the window it came from in `@claude_origin`, and attaches to
-  it in a popup.
-- The **hooks** set `@claude_state` / `@claude_state_at` on each session as Claude
-  works.
-- The **picker** lists sessions matching the prefix, reads their state and a live
-  `capture-pane` preview, and on selection moves your client to the session's
-  origin window before resuming it in the popup.
-- Pressing `prefix` + `u` **from inside a session popup** detaches that popup
-  first (closing it), then reopens the picker full-size on the outer host client —
-  so you never end up with a cramped popup-in-popup.
+- The **launcher** creates a detached `pi-<hash-of-dir>` tmux session running
+  `pi`, records the origin window in `@pi_origin`, and attaches to it in a popup.
+- The bundled **Pi extension** updates `@pi_state` / `@pi_state_at` as Pi starts
+  and finishes turns.
+- The **picker** lists tmux sessions matching the prefix and non-prefixed panes
+  whose current command is `pi`, reads state for managed sessions, shows a live
+  `capture-pane` preview, and jumps to the selected session or pane.
+- Pressing `prefix` + `u` from inside a Pi popup first detaches that popup, then
+  reopens the picker on the outer tmux client.
+
+## Compatibility
+
+The old `claude_session_manager.tmux` file remains as a compatibility wrapper,
+but new configs should use `pi_session_manager.tmux` and the `@pi_*` options.
 
 ## License
 
-[MIT](LICENSE) © Takuya Matsuyama
+[MIT](LICENSE)
