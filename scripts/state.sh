@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# Record a Claude Code session's state on its tmux session, for the picker.
-# Wire this into Claude Code hooks (see README):  state.sh <blocked|working|done|idle>
+# Record a Pi session's state on its tmux session, for the picker.
+# Usage: state.sh <blocked|working|done|idle>
 #
-# Claude Code hooks inherit the Claude process environment, so $TMUX_PANE is set
-# whenever Claude runs inside tmux. Outside tmux this is a no-op.
+# This is useful for custom integrations. The bundled Pi extension at
+# extensions/tmux-state.ts updates the same @pi_state / @pi_state_at options.
 [ -z "$TMUX_PANE" ] && exit 0
 
-session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null) || exit 0
-[ -z "$session" ] && exit 0
+now="$(date +%s)"
+state="${1:-idle}"
 
-tmux set-option -t "$session" @claude_state "${1:-idle}"
-tmux set-option -t "$session" @claude_state_at "$(date +%s)"
+# Pane-scoped: works for manual `pi` panes that share a tmux session.
+tmux set-option -p -t "$TMUX_PANE" @pi_state "$state" 2>/dev/null
+tmux set-option -p -t "$TMUX_PANE" @pi_state_at "$now" 2>/dev/null
+
+# Session-scoped: keeps managed `pi-<hash>` sessions working as before.
+session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
+if [ -n "$session" ]; then
+  tmux set-option -t "$session" @pi_state "$state"
+  tmux set-option -t "$session" @pi_state_at "$now"
+fi
 exit 0
