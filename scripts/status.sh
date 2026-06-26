@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Compact Pi status summary for the tmux status line.
 #
-#   status.sh           Print a one-line summary like "π 2▶ 1✓ 1●", suitable for
-#                       embedding in status-right via #(.../status.sh).
+#   status.sh             Print a summary like "π 2▶ 1✓ 1●"; empty when no states.
+#   status.sh --or <txt>  Same, but fall back to <txt> when there is no summary.
+#   status.sh --or-host   Fall back to the short hostname. Use this in tmux
+#                         status-right, where '#h' inside #(...) is NOT expanded
+#                         and would be passed through literally.
+#                         Lets one status-right slot show the Pi badge while
+#                         active and e.g. the hostname otherwise.
 #
 # Counts both managed `pi-<hash>` sessions and manually-started `pi` panes,
 # reading the same @pi_state options the picker uses. Only non-zero groups are
@@ -11,6 +16,13 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
+
+# Fallback text shown when there is no active summary (e.g. a hostname).
+fallback=""
+case "${1:-}" in
+--or)      fallback="${2:-}" ;;
+--or-host) fallback="$(hostname -s 2>/dev/null || hostname 2>/dev/null)" ;;
+esac
 
 prefix="$(get_tmux_option @pi_session_prefix 'pi-')"
 
@@ -58,7 +70,7 @@ while IFS=$'\t' read -r s pane cmd; do
 done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}' 2>/dev/null)
 
 # Nothing to show.
-[ "$total" -eq 0 ] && exit 0
+[ "$total" -eq 0 ] && { printf '%s' "$fallback"; exit 0; }
 
 # Build segments. With colour: "#[fg=COL]N ICON#[default]".
 seg() {
@@ -77,9 +89,9 @@ segments+="$(seg "$working" "$icon_working" "$col_working")"
 segments+="$(seg "$done_"   "$icon_done"    "$col_done")"
 [ "$show_idle" = on ] && segments+="$(seg "$idle" "$icon_idle" "$col_idle")"
 
-# No visible state segments -> print nothing, so the whole badge (sigil
-# included) disappears instead of leaving a lone "π" stuck in the bar.
-[ -z "$segments" ] && exit 0
+# No visible state segments -> show the fallback (empty by default) so the whole
+# badge (sigil included) disappears instead of leaving a lone "π" stuck.
+[ -z "$segments" ] && { printf '%s' "$fallback"; exit 0; }
 
 # Trim a single trailing space.
 printf '%s%s' "$sigil " "${segments% }"
