@@ -33,6 +33,20 @@ icon_blocked="$(get_tmux_option @pi_status_icon_blocked '●')"
 icon_idle="$(get_tmux_option @pi_status_icon_idle '·')"
 sigil="$(get_tmux_option @pi_status_sigil 'π')"
 
+# Animate the working icon by cycling through a space-separated list of frames,
+# advancing one frame per second (driven by the caller's status-interval).
+# Enable with: set -g @pi_status_animate_working 'on'
+# Customise frames with: set -g @pi_status_anim_frames '✦ ✶ ✷ ✶'
+animate_working="$(get_tmux_option @pi_status_animate_working 'off')"
+if [ "$animate_working" = on ]; then
+  anim_frames="$(get_tmux_option @pi_status_anim_frames '✦ ✶ ✷ ✶')"
+  # shellcheck disable=SC2206
+  frames=($anim_frames)
+  if [ "${#frames[@]}" -gt 0 ]; then
+    icon_working="${frames[$(( $(date +%s) % ${#frames[@]} ))]}"
+  fi
+fi
+
 # tmux colour names for #[fg=...]; empty disables colouring.
 col_working="$(get_tmux_option @pi_status_color_working 'yellow')"
 col_done="$(get_tmux_option @pi_status_color_done 'cyan')"
