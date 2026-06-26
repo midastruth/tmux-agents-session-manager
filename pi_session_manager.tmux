@@ -12,6 +12,12 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 launch_key="$(get_tmux_option @pi_launch_key 'y')"
 list_key="$(get_tmux_option @pi_list_key 'u')"
 
+# Export the absolute path to status.sh as a tmux option so user config never
+# has to hardcode this plugin's install directory. Reference it from
+# status-right like:  #(#{@pi_status_script} --or-host)
+# This decouples the user's status line from where the plugin lives on disk.
+tmux set-option -gq @pi_status_script "$CURRENT_DIR/scripts/status.sh"
+
 # Launch (or re-attach to) a Pi session for the current pane's directory.
 # #{pane_current_path} / #{window_id} are expanded by run-shell before the args
 # reach the script.

@@ -138,6 +138,34 @@ directly:
 set -g status-right '#(~/clone/path/tmux-pi-session-manager/scripts/status.sh) %H:%M'
 ```
 
+### Fallback slot (`--or` / `--or-host`)
+
+When there are no Pi sessions the script prints nothing. To reuse the same
+status-right slot for something else when idle, pass a fallback:
+
+```tmux
+# Show the Pi badge while active, otherwise the short hostname.
+set -g status-right '#(~/clone/path/tmux-pi-session-manager/scripts/status.sh --or-host)'
+
+# Or any literal fallback text.
+set -g status-right '#(~/clone/path/tmux-pi-session-manager/scripts/status.sh --or "no agents")'
+```
+
+Use `--or-host` rather than `#h`: inside `#(...)`, tmux does not expand `#h`, so
+it would be passed through literally.
+
+### Animated working icon
+
+Give the `working` count a subtle spinner so active turns stand out:
+
+```tmux
+set -g @pi_status_animate_working 'on'
+set -g @pi_status_anim_frames     '✦ ✶ ✷ ✶'   # space-separated frames
+```
+
+Frames advance roughly once per second (driven by `status-interval`), so keep
+`@pi_status_interval` low for a smooth animation.
+
 ## Options
 
 Set any of these before the plugin loads:
@@ -167,6 +195,16 @@ set -g @pi_status_color_blocked 'red'    # per-state colours (tmux colour names)
 set -g @pi_status_color_working 'yellow'
 set -g @pi_status_color_done    'cyan'
 set -g @pi_status_color_idle    'green'
+set -g @pi_status_animate_working 'off'  # 'on' animates the working icon
+set -g @pi_status_anim_frames     '✦ ✶ ✷ ✶'  # spinner frames (space-separated)
+```
+
+The status script also exposes a path-free reference via the
+`@pi_status_script` tmux option (set by the plugin on load), so your config
+never has to hardcode the install directory:
+
+```tmux
+set -g status-right '#(#{@pi_status_script} --or-host)'
 ```
 
 The actual default for `@pi_command` is equivalent to:
