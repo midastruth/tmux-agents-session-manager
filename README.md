@@ -18,6 +18,8 @@ them.
 - 🚀 **Launcher** (`prefix` + `y`) to open or attach the Pi session for the
   current directory.
 - ❌ **Quick kill** (`ctrl-x`) from the picker.
+- 📊 **Status-line summary** (opt-in): a compact `π 1● 2▶ 1✓` badge in
+  `status-right` counting blocked / working / done sessions at a glance.
 
 ## Prerequisites
 
@@ -103,6 +105,39 @@ If you override `@pi_command` and do not load the extension, the picker still
 lists, previews, jumps, and kills sessions; status may stay `idle` or show
 `unknown`.
 
+## Status line summary
+
+Show a compact badge of Pi session states in your tmux status bar, so you know
+when work finished or got blocked without opening the picker.
+
+Enable auto-injection into `status-right`:
+
+```tmux
+set -g @pi_status on
+```
+
+This appends `#(.../scripts/status.sh)` to `status-right` and tightens
+`status-interval` so it refreshes promptly. Output looks like:
+
+```
+π 1● 2▶ 1✓
+```
+
+| Segment | State     | Meaning                |
+| ------- | --------- | ---------------------- |
+| `●`     | `blocked` | needs input (shown first) |
+| `▶`     | `working` | actively running       |
+| `✓`     | `done`    | finished, unseen       |
+| `·`     | `idle`    | hidden unless enabled  |
+
+Only non-zero groups appear, and nothing is printed when there are no Pi
+sessions. Prefer to place it yourself? Skip `@pi_status` and embed the script
+directly:
+
+```tmux
+set -g status-right '#(~/clone/path/tmux-pi-session-manager/scripts/status.sh) %H:%M'
+```
+
 ## Options
 
 Set any of these before the plugin loads:
@@ -114,6 +149,24 @@ set -g @pi_command        'pi'       # command run in new sessions; default load
 set -g @pi_session_prefix 'pi-'      # tmux session name prefix
 set -g @pi_popup_width    '90%'      # popup width
 set -g @pi_popup_height   '90%'      # popup height
+```
+
+Status-line options (only relevant with `@pi_status on` or manual embedding):
+
+```tmux
+set -g @pi_status            'off'   # 'on' auto-appends the summary to status-right
+set -g @pi_status_interval   '5'     # max seconds between refreshes
+set -g @pi_status_show_idle  'off'   # also count idle sessions
+set -g @pi_status_color      'on'    # emit #[fg=...] colours
+set -g @pi_status_sigil      'π'     # leading marker
+set -g @pi_status_icon_blocked '●'   # per-state icons
+set -g @pi_status_icon_working '▶'
+set -g @pi_status_icon_done    '✓'
+set -g @pi_status_icon_idle    '·'
+set -g @pi_status_color_blocked 'red'    # per-state colours (tmux colour names)
+set -g @pi_status_color_working 'yellow'
+set -g @pi_status_color_done    'cyan'
+set -g @pi_status_color_idle    'green'
 ```
 
 The actual default for `@pi_command` is equivalent to:

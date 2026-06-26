@@ -22,3 +22,22 @@ tmux bind-key "$launch_key" \
 # closes that popup first so the picker opens full-size on the outer client.
 tmux bind-key "$list_key" \
   run-shell "$CURRENT_DIR/scripts/list.sh '#{client_name}'"
+
+# Optional: append a compact Pi status summary to status-right.
+# Enable with `set -g @pi_status on`. The interval (seconds) controls how often
+# tmux re-runs the summary; status-interval also bounds it.
+status_enabled="$(get_tmux_option @pi_status 'off')"
+if [ "$status_enabled" = on ]; then
+  status_interval="$(get_tmux_option @pi_status_interval '5')"
+  summary="#($CURRENT_DIR/scripts/status.sh)"
+  current_right="$(tmux show-option -gqv status-right)"
+  # Avoid appending twice on plugin reload.
+  case "$current_right" in
+  *"$CURRENT_DIR/scripts/status.sh"*) : ;;
+  *) tmux set-option -g status-right "$summary $current_right" ;;
+  esac
+  # Ensure the line refreshes often enough to feel live.
+  if [ "$(tmux show-option -gqv status-interval)" -gt "$status_interval" ] 2>/dev/null; then
+    tmux set-option -g status-interval "$status_interval"
+  fi
+fi
