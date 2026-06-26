@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Compact Pi status summary for the tmux status line.
+# Compact agent status summary for the tmux status line.
 #
-#   status.sh             Print a summary like "π 2▶ 1✓ 1●"; empty when no states.
+#   status.sh             Print a summary like "agents π 2▶ 1✓ 1●"; empty when no states.
 #   status.sh --or <txt>  Same, but fall back to <txt> when there is no summary.
 #   status.sh --or-host   Fall back to the short hostname. Use this in tmux
 #                         status-right, where '#h' inside #(...) is NOT expanded
 #                         and would be passed through literally.
-#                         Lets one status-right slot show the Pi badge while
+#                         Lets one status-right slot show the agents badge while
 #                         active and e.g. the hostname otherwise.
 #
-# Counts both managed `pi-<hash>` sessions and manually-started `pi` panes,
+# Counts both managed `pi-<hash>` sessions and manually-started agent panes,
 # reading the same @pi_state options the picker uses. Only non-zero groups are
-# shown; prints nothing when there are no Pi sessions at all.
+# shown; prints nothing when there are no agent sessions at all.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
@@ -31,7 +31,7 @@ icon_working="$(get_tmux_option @pi_status_icon_working '▶')"
 icon_done="$(get_tmux_option @pi_status_icon_done '✓')"
 icon_blocked="$(get_tmux_option @pi_status_icon_blocked '●')"
 icon_idle="$(get_tmux_option @pi_status_icon_idle '·')"
-sigil="$(get_tmux_option @pi_status_sigil 'π')"
+sigil="$(get_tmux_option @pi_status_sigil 'agents π')"
 
 # Animate the working icon by cycling through a space-separated list of frames,
 # advancing one frame per second (driven by the caller's status-interval).
@@ -76,12 +76,13 @@ while IFS= read -r s; do
   count_state "$(tmux show-options -qv -t "$s" @pi_state 2>/dev/null)"
 done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
 
-# Manual `pi` panes (pane-scoped @pi_state).
-while IFS=$'\t' read -r s pane cmd; do
+# Manual agent panes (pane-scoped @pi_state), commands from @pi_detect_commands.
+# resolve_pane_agent also catches wrapped agents (codex runs under node).
+while IFS=$'\t' read -r s pane cmd ppid; do
   [[ "$s" == "$prefix"* ]] && continue
-  [ "${cmd##*/}" = pi ] || continue
+  resolve_pane_agent "${cmd##*/}" "$ppid" >/dev/null || continue
   count_state "$(tmux show-options -pqv -t "$pane" @pi_state 2>/dev/null)"
-done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}' 2>/dev/null)
+done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}' 2>/dev/null)
 
 # Nothing to show.
 [ "$total" -eq 0 ] && { printf '%s' "$fallback"; exit 0; }
@@ -104,7 +105,7 @@ segments+="$(seg "$done_"   "$icon_done"    "$col_done")"
 [ "$show_idle" = on ] && segments+="$(seg "$idle" "$icon_idle" "$col_idle")"
 
 # No visible state segments -> show the fallback (empty by default) so the whole
-# badge (sigil included) disappears instead of leaving a lone "π" stuck.
+# badge (sigil included) disappears instead of leaving a lone marker stuck.
 [ -z "$segments" ] && { printf '%s' "$fallback"; exit 0; }
 
 # Trim a single trailing space.

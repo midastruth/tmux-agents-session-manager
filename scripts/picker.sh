@@ -40,7 +40,7 @@ split_classify() {
 }
 
 emit_managed_rows() {
-  local now s state at path name rank label desc ago
+  local now s state at path name rank label desc ago cmd tool
   now=$(date +%s)
   tmux list-sessions -F '#{session_name}' 2>/dev/null | while IFS= read -r s; do
     [[ "$s" == "$prefix"* ]] || continue
@@ -48,23 +48,31 @@ emit_managed_rows() {
     at=$(tmux show-options -qv -t "$s" @pi_state_at 2>/dev/null)
     path=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
     name=${path##*/}
+    # The agent recorded at launch, falling back to whatever runs in the pane.
+    tool=$(tmux show-options -qv -t "$s" @pi_tool 2>/dev/null)
+    [ -n "$tool" ] || {
+      cmd=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
+      tool=${cmd##*/}
+    }
     split_classify "$state"
     if [ -n "$at" ]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
-    # rank \t kind \t target \t label \t name \t age \t path \t desc
-    printf '%s\tsession\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$rank" "$s" "$label" "$name" "$ago" "$(short_path "$path")" "$desc"
+    # rank \t kind \t target \t label \t name \t age \t path \t desc \t tool
+    printf '%s\tsession\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$rank" "$s" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$tool"
   done
 }
 
 emit_manual_rows() {
-  local now s pane cmd path base name state at rank label desc ago
+  local now s pane cmd ppid path base name state at rank label desc ago
   now=$(date +%s)
-  tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_current_path}' 2>/dev/null |
-    while IFS=$'\t' read -r s pane cmd path; do
-      # Prefixed sessions are already listed as managed Pi sessions.
+  tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null |
+    while IFS=$'\t' read -r s pane cmd ppid path; do
+      # Prefixed sessions are already listed as managed agent sessions.
       [[ "$s" == "$prefix"* ]] && continue
-      base="${cmd##*/}"
-      [ "$base" = pi ] || continue
+      # Resolve the agent name, including wrappers (codex runs under node) by
+      # walking the pane's process subtree. Empty -> not an agent pane.
+      base="$(resolve_pane_agent "${cmd##*/}" "$ppid")" || continue
+      [ -n "$base" ] || continue
       name=${path##*/}
       # Per-pane state, written by the extension/state.sh when loaded. Falls back
       # to a plain "manual" marker when no status extension is attached.
@@ -73,11 +81,11 @@ emit_manual_rows() {
       if [ -n "$state" ]; then
         split_classify "$state"
       else
-        rank=2; label='🟣 manual '; desc='pane running pi'
+        rank=2; label='🟣 manual '; desc="pane running $base"
       fi
       if [ -n "$at" ]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
-      printf '%s\tpane\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$rank" "$pane" "$label" "$name" "$ago" "$(short_path "$path")" "$desc"
+      printf '%s\tpane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rank" "$pane" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$base"
     done
 }
 
@@ -89,15 +97,22 @@ emit_rows() {
     # finished just now sits at the top of its group. -k6,6n reads the leading
     # number of the age field ("5m" -> 5; "-" -> 0).
   } | sort -t$'\t' -k1,1n -k6,6n |
-    # Append a pre-aligned display column (field 9). Two passes: first find the
-    # widest project name, then pad every name to that width so the age and path
-    # columns line up. Logic fields 1-8 stay untouched for enter/ctrl-x.
+    # Append a pre-aligned display column (field 10). Two passes: first find the
+    # widest project name and tool name, then pad every row to those widths so
+    # the tool, age and path columns line up. Logic fields 1-9 stay untouched
+    # for enter/ctrl-x. Field order: 1 rank, 2 kind, 3 target, 4 label,
+    # 5 name, 6 age, 7 path, 8 desc, 9 tool.
     awk 'BEGIN { FS = OFS = "\t" }
-      { rows[NR] = $0; if (length($5) > w) w = length($5) }
+      {
+        rows[NR] = $0
+        if (length($5) > w) w = length($5)
+        if (length($9) > tw) tw = length($9)
+      }
       END {
         for (i = 1; i <= NR; i++) {
           split(rows[i], f, "\t")
-          disp = sprintf("%s  %-*s  %4s  %s — %s", f[4], w, f[5], f[6], f[7], f[8])
+          disp = sprintf("%s  %-*s  %-*s  %4s  %s — %s", \
+            f[4], tw, f[9], w, f[5], f[6], f[7], f[8])
           print rows[i], disp
         }
       }'
@@ -119,15 +134,15 @@ emit_rows() {
 }
 
 if ! command -v fzf >/dev/null 2>&1; then
-  tmux display-message "tmux-pi-session-manager: fzf is required for the picker"
+  tmux display-message "tmux-agents-session-manager: fzf is required for the picker"
   exit 0
 fi
 
 self="${BASH_SOURCE[0]}"
 self_cmd=$(printf '%q' "$self")
 export FZF_DEFAULT_OPTS=''
-sel=$(emit_rows | fzf --ansi --delimiter='\t' --with-nth=9 \
-  --reverse --cycle --header='Pi sessions/panes · enter: jump · ctrl-x: kill/interrupt' \
+sel=$(emit_rows | fzf --ansi --delimiter='\t' --with-nth=10 \
+  --reverse --cycle --header='Agent sessions/panes · enter: jump · ctrl-x: kill/interrupt' \
   --preview="tmux capture-pane -ept {3}" --preview-window='right,62%,wrap' \
   --bind="ctrl-x:execute-silent($self_cmd --kill {2} {3})+reload($self_cmd --list)")
 
