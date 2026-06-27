@@ -16,52 +16,57 @@
 # status-right frequently. Discovery of manual panes happens in picker.sh when
 # prefix+u is pressed.
 set -uo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_PATH="${BASH_SOURCE[0]}"
+DIR="${SOURCE_PATH%/*}"
+[ "$DIR" = "$SOURCE_PATH" ] && DIR=.
+DIR="$(cd "$DIR" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
 
-# Cache the session prefix for this invocation. status.sh can run every second,
-# so it must not do command/process discovery here.
-AGENT_SESSION_PREFIX="$(agent_session_prefix)"
+# Read all global options in one tmux call. status.sh can run every second, so
+# avoid repeated show-option processes on every refresh.
+option_sep=$'\037'
+option_values="$(tmux display-message -p -F "#{@agent_session_prefix}${option_sep}#{@agent_status_icon_working}${option_sep}#{@agent_status_icon_done}${option_sep}#{@agent_status_icon_blocked}${option_sep}#{@agent_status_icon_idle}${option_sep}#{@agent_status_sigil}${option_sep}#{@agent_status_animate_working}${option_sep}#{@agent_status_anim_frames}${option_sep}#{@agent_status_color_working}${option_sep}#{@agent_status_color_done}${option_sep}#{@agent_status_color_blocked}${option_sep}#{@agent_status_color_idle}${option_sep}#{@agent_status_color}${option_sep}#{@agent_status_show_idle}" 2>/dev/null || true)"
+IFS="$option_sep" read -r \
+  AGENT_SESSION_PREFIX \
+  icon_working icon_done icon_blocked icon_idle sigil \
+  animate_working anim_frames \
+  col_working col_done col_blocked col_idle \
+  use_color show_idle <<< "$option_values"
+
+# Apply defaults for unset/empty options, matching get_tmux_option semantics.
+AGENT_SESSION_PREFIX="${AGENT_SESSION_PREFIX:-agent-}"
+icon_working="${icon_working:-✦}"
+icon_done="${icon_done:-✓}"
+icon_blocked="${icon_blocked:-●}"
+icon_idle="${icon_idle:-·}"
+sigil="${sigil:-agents}"
+animate_working="${animate_working:-on}"
+anim_frames="${anim_frames:-✦ ✶ ✷ ✶}"
+col_working="${col_working:-yellow}"
+col_done="${col_done:-cyan}"
+col_blocked="${col_blocked:-red}"
+col_idle="${col_idle:-green}"
+use_color="${use_color:-off}"
+show_idle="${show_idle:-off}"
 export AGENT_SESSION_PREFIX
 
-# Fallback text shown when there is no active summary (e.g. a hostname).
+# Fallback text shown when there is no active summary (e.g. a hostname). For
+# --or-host, compute hostname lazily only if the fallback will actually print.
 fallback=""
+fallback_host=off
 case "${1:-}" in
 --or)      fallback="${2:-}" ;;
---or-host) fallback="$(hostname -s 2>/dev/null || hostname 2>/dev/null)" ;;
+--or-host) fallback_host=on ;;
 esac
 
-# Icons/labels per state. Override via tmux options if desired.
-icon_working="$(get_tmux_option @agent_status_icon_working '✦')"
-icon_done="$(get_tmux_option @agent_status_icon_done '✓')"
-icon_blocked="$(get_tmux_option @agent_status_icon_blocked '●')"
-icon_idle="$(get_tmux_option @agent_status_icon_idle '·')"
-sigil="$(get_tmux_option @agent_status_sigil 'agents')"
-
-# Animate the working icon by cycling through a space-separated list of frames,
-# advancing one frame per second (driven by the caller's status-interval).
-# Enable with: set -g @agent_status_animate_working 'on'
-# Customise frames with: set -g @agent_status_anim_frames '✦ ✶ ✷ ✶'
-animate_working="$(get_tmux_option @agent_status_animate_working 'on')"
-if [ "$animate_working" = on ]; then
-  anim_frames="$(get_tmux_option @agent_status_anim_frames '✦ ✶ ✷ ✶')"
-  # shellcheck disable=SC2206
-  frames=($anim_frames)
-  if [ "${#frames[@]}" -gt 0 ]; then
-    icon_working="${frames[$(( $(date +%s) % ${#frames[@]} ))]}"
+fallback_text() {
+  if [ "$fallback_host" = on ]; then
+    hostname -s 2>/dev/null || hostname 2>/dev/null
+  else
+    printf '%s' "$fallback"
   fi
-fi
-
-# tmux colour names for #[fg=...]; empty disables colouring.
-col_working="$(get_tmux_option @agent_status_color_working 'yellow')"
-col_done="$(get_tmux_option @agent_status_color_done 'cyan')"
-col_blocked="$(get_tmux_option @agent_status_color_blocked 'red')"
-col_idle="$(get_tmux_option @agent_status_color_idle 'green')"
-# Whether to emit #[fg=...] colour escapes (only meaningful inside status line).
-use_color="$(get_tmux_option @agent_status_color 'off')"
-# Show idle count too? Off by default to keep the line quiet.
-show_idle="$(get_tmux_option @agent_status_show_idle 'off')"
+}
 
 working=0 done_=0 blocked=0 idle=0 total=0
 
@@ -88,16 +93,28 @@ done < <(tmux list-sessions -F '#{session_name}	#{@agent_state}' 2>/dev/null)
 # runs from status-right and may execute every second. A manual pane is counted
 # only after pi/codex/claude/etc. self-reports by writing pane-scoped
 # @agent_state via scripts/state.sh or an equivalent integration.
-while IFS=$'\t' read -r s pane; do
+while IFS=$'\t' read -r s pane state; do
   [ -z "$pane" ] && continue
   is_managed_session "$s" && continue
-  state="$(tmux show-options -pqv -t "$pane" @agent_state)" || exit $?
   [ -n "$state" ] || continue
   count_state "$state"
-done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}' 2>/dev/null)
+done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{@agent_state}' 2>/dev/null)
 
 # Nothing to show.
-[ "$total" -eq 0 ] && { printf '%s' "$fallback"; exit 0; }
+[ "$total" -eq 0 ] && { fallback_text; exit 0; }
+
+# Animate the working icon by cycling through a space-separated list of frames,
+# advancing one frame per second (driven by the caller's status-interval). Defer
+# date(1) until we know a working segment will be visible.
+# Enable with: set -g @agent_status_animate_working 'on'
+# Customise frames with: set -g @agent_status_anim_frames '✦ ✶ ✷ ✶'
+if [ "$working" -gt 0 ] && [ "$animate_working" = on ]; then
+  # shellcheck disable=SC2206
+  frames=($anim_frames)
+  if [ "${#frames[@]}" -gt 0 ]; then
+    icon_working="${frames[$(( $(date +%s) % ${#frames[@]} ))]}"
+  fi
+fi
 
 # Build segments. With colour: "#[fg=COL]N ICON#[default]".
 seg() {
@@ -118,7 +135,7 @@ segments+="$(seg "$done_"   "$icon_done"    "$col_done")"
 
 # No visible state segments -> show the fallback (empty by default) so the whole
 # badge (sigil included) disappears instead of leaving a lone marker stuck.
-[ -z "$segments" ] && { printf '%s' "$fallback"; exit 0; }
+[ -z "$segments" ] && { fallback_text; exit 0; }
 
 # Trim a single trailing space.
 printf '%s%s' "$sigil " "${segments% }"
