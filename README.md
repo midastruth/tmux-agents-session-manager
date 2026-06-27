@@ -28,7 +28,7 @@ or swap agents via `@agent_agents`.
 
 ## Prerequisites
 
-- **tmux ≥ 3.2** for `display-popup`
+- **tmux ≥ 3.3** for borderless `display-popup` (`-B`)
 - **fzf** for the picker UI
 - **Pi** CLI (`pi` command) for the default Pi agent (other agents can be configured instead)
 - bash; macOS or Linux
@@ -40,7 +40,7 @@ set -g extended-keys on
 set -g extended-keys-format csi-u
 ```
 
-`extended-keys-format csi-u` requires tmux 3.5+. On tmux 3.2–3.4, use only
+`extended-keys-format csi-u` requires tmux 3.5+. On tmux 3.3–3.4, use only
 `set -g extended-keys on`.
 
 ## Install
@@ -100,8 +100,9 @@ codex=codex
 claude=claude"
 ```
 
-- `prefix` + `y` shows a menu of these agents (pi/codex/claude). Pick one and it
-  opens in a popup for the current directory. With a single agent configured,
+- `prefix` + `y` shows a compact tmux menu for these agents (pi/codex/claude),
+  with entries like `pi (1)`, `codex (2)`, `claude (3)`. Use `Ctrl+n` /
+  `Ctrl+p` to move, or number keys to select. With a single agent configured,
   or `@agent_launch_menu off`, it launches directly with no menu.
 - Sessions are **namespaced per agent** (`agent-<agent>-<hash>`), so the same
   directory can run pi *and* codex *and* claude simultaneously without colliding.
