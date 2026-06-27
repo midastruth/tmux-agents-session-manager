@@ -162,6 +162,26 @@ kv_get() {
   return 1
 }
 
+# Portable full-table form used by resolve_pane_agent:
+#   ps -axo pid=,ppid=,comm=   (BSD/macOS)
+#   ps -eo  pid=,ppid=,comm=   (GNU/Linux fallback)
+# Reconstruct the table from the parent/child and comm fixtures so the same
+# mock data drives both the old per-parent form and this snapshot form.
+if { [ "${1:-}" = '-axo' ] || [ "${1:-}" = '-eo' ]; } &&
+  [ "${2:-}" = 'pid=,ppid=,comm=' ]; then
+  line=''
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    parent="${line%%=*}"
+    kids="${line#*=}"
+    for child in $kids; do
+      comm="$(kv_get "${TMUX_MOCK_PS_COMM:-}" "$child" || true)"
+      printf '%s %s %s\n' "$child" "$parent" "$comm"
+    done
+  done <<< "${TMUX_MOCK_PS_CHILDREN:-}"
+  exit 0
+fi
+
 if [ "${1:-}" = '-o' ] && [ "${2:-}" = 'pid=' ] && [ "${3:-}" = '--ppid' ]; then
   children="$(kv_get "${TMUX_MOCK_PS_CHILDREN:-}" "${4:-}" || true)"
   for child in $children; do
@@ -297,6 +317,17 @@ TMUX_MOCK_PS_CHILDREN=$'123=456\n456=789'
 TMUX_MOCK_PS_COMM=$'456=bash\n789=codex'
 out="$(run_bash '. scripts/helpers.sh; resolve_pane_agent node 123')"
 assert_eq 'resolve_pane_agent finds child agent for configured wrapper' 'codex' "$out"
+
+# tmux may report the wrapper basename ("node") while the pane root process has
+# renamed itself in place to the real agent ("pi"). The root pid's own comm must
+# be detected even when it has no matching descendant.
+reset_mocks
+AGENT_DETECT_COMMANDS='pi codex'
+AGENT_DETECT_WRAPPERS='node'
+TMUX_MOCK_PS_CHILDREN=$'0=123'
+TMUX_MOCK_PS_COMM=$'123=pi'
+out="$(run_bash '. scripts/helpers.sh; resolve_pane_agent node 123')"
+assert_eq 'resolve_pane_agent detects renamed-in-place root process' 'pi' "$out"
 
 reset_mocks
 TMUX_MOCK_TARGET_OPTIONS=$'%7|@agent_state=done'

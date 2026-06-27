@@ -140,24 +140,49 @@ resolve_pane_agent() {
   is_wrapper_command "$cmd" || return 1
   # ps may be unavailable in minimal environments; fail quietly if so.
   command -v ps >/dev/null 2>&1 || return 1
+  # Snapshot the full process table once (pid ppid comm). GNU ps supports
+  # `--ppid` for per-parent queries, but BSD/macOS ps does not, so we read the
+  # whole table here and filter by parent in-process. This keeps the subtree
+  # walk portable across Linux and macOS.
+  local table
+  table=$(ps -axo pid=,ppid=,comm= 2>/dev/null) ||
+    table=$(ps -eo pid=,ppid=,comm= 2>/dev/null) || return 1
+  # tmux's pane_current_command can lag behind the real foreground comm (e.g. it
+  # reports the launching "node" while the actual process renamed itself to
+  # "pi"). Check the pane root pid's own comm from the snapshot before walking
+  # descendants, so such renamed-in-place agents are still detected.
+  local root_comm
+  root_comm=$(
+    while read -r rpid rppid rcomm; do
+      [ "$rpid" = "$pid" ] && { printf '%s' "${rcomm##*/}"; break; }
+    done <<EOF
+$table
+EOF
+  )
+  if [ -n "$root_comm" ] && is_detected_command "$root_comm"; then
+    printf '%s' "$root_comm"
+    return 0
+  fi
   # Breadth-first walk of the process subtree rooted at $pid.
-  local queue="$pid" current children child comm
+  local queue="$pid" current child cpid cppid ccomm comm rpid rppid rcomm
   while [ -n "$queue" ]; do
     current="${queue%% *}"
     case "$queue" in
     *" "*) queue="${queue#* }" ;;
     *) queue="" ;;
     esac
-    children=$(ps -o pid= --ppid "$current" 2>/dev/null | tr '\n' ' ')
-    for child in $children; do
-      comm=$(ps -o comm= -p "$child" 2>/dev/null)
-      comm="${comm##*/}"
+    while read -r cpid cppid ccomm; do
+      [ "$cppid" = "$current" ] || continue
+      child="$cpid"
+      comm="${ccomm##*/}"
       if is_detected_command "$comm"; then
         printf '%s' "$comm"
         return 0
       fi
       queue="$queue $child"
-    done
+    done <<EOF
+$table
+EOF
   done
   return 1
 }
