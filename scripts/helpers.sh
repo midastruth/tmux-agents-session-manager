@@ -173,6 +173,10 @@ EOF
     esac
     while read -r cpid cppid ccomm; do
       [ "$cppid" = "$current" ] || continue
+      # Guard against self-parenting rows (e.g. pid 0, whose ppid is itself):
+      # without it such a row would re-enqueue $current forever. A real process
+      # tree is acyclic, so every other node is still enqueued exactly once.
+      [ "$cpid" = "$current" ] && continue
       child="$cpid"
       comm="${ccomm##*/}"
       if is_detected_command "$comm"; then
