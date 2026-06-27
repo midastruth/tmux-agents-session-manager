@@ -263,6 +263,13 @@ never has to hardcode the install directory:
 set -g status-right '#(#{@agent_status_script} --or-host)'
 ```
 
+For a styled Powerline-style right segment, keep your existing separators and
+put the script in the slot that would otherwise show the host:
+
+```tmux
+set -g status-right "#[fg=#586e75,bg=#292a30,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#586e75]#[fg=#657b83,bg=#586e75,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#657b83]#[fg=#93a1a1,bg=#657b83,nobold,nounderscore,noitalics]#[fg=#15161E,bg=#93a1a1,bold] #{?@agent_status_script,#(#{@agent_status_script} --or-host),#h} "
+```
+
 The actual default for `@agent_default_command` is equivalent to:
 
 ```tmux
