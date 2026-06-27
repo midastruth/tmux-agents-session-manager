@@ -27,7 +27,7 @@ esac
 prefix="$(get_tmux_option @pi_session_prefix 'pi-')"
 
 # Icons/labels per state. Override via tmux options if desired.
-icon_working="$(get_tmux_option @pi_status_icon_working '▶')"
+icon_working="$(get_tmux_option @pi_status_icon_working '✦')"
 icon_done="$(get_tmux_option @pi_status_icon_done '✓')"
 icon_blocked="$(get_tmux_option @pi_status_icon_blocked '●')"
 icon_idle="$(get_tmux_option @pi_status_icon_idle '·')"
