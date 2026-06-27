@@ -92,13 +92,33 @@ done < <(tmux list-sessions -F '#{session_name}	#{@agent_state}' 2>/dev/null)
 # Manual agent panes. Do not discover agents from process names here: status.sh
 # runs from status-right and may execute every second. A manual pane is counted
 # only after pi/codex/claude/etc. self-reports by writing pane-scoped
-# @agent_state via scripts/state.sh or an equivalent integration.
-while IFS=$'\t' read -r s pane state; do
+# @agent_state via scripts/state.sh or an equivalent integration. Do not read
+# #{@agent_state} from list-panes here: tmux formats fall back to session-scoped
+# options, which would count every pane in a manual session with session state.
+manual_panes=()
+while IFS=$'\t' read -r s pane; do
   [ -z "$pane" ] && continue
   is_managed_session "$s" && continue
-  [ -n "$state" ] || continue
-  count_state "$state"
-done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{@agent_state}' 2>/dev/null)
+  manual_panes+=("$pane")
+done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}' 2>/dev/null)
+
+# Read pane-scoped state for all manual panes with one tmux client process. This
+# preserves the old show-options -p behavior (pane options only, no inheritance)
+# without spawning one tmux process per pane.
+if [ "${#manual_panes[@]}" -gt 0 ]; then
+  pane_state_cmd=(tmux)
+  for pane in "${manual_panes[@]}"; do
+    if [ "${#pane_state_cmd[@]}" -gt 1 ]; then
+      pane_state_cmd+=(\;)
+    fi
+    pane_state_cmd+=(show-options -pqv -t "$pane" @agent_state)
+  done
+  pane_states="$("${pane_state_cmd[@]}" 2>/dev/null)" || exit $?
+  while IFS= read -r state; do
+    [ -n "$state" ] || continue
+    count_state "$state"
+  done <<< "$pane_states"
+fi
 
 # Nothing to show.
 [ "$total" -eq 0 ] && { fallback_text; exit 0; }
