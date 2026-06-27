@@ -14,7 +14,11 @@ get_tmux_option() {
 }
 
 agent_session_prefix() {
-  get_tmux_option @agent_session_prefix 'agent-'
+  if [ -n "${AGENT_SESSION_PREFIX:-}" ]; then
+    printf '%s' "$AGENT_SESSION_PREFIX"
+  else
+    get_tmux_option @agent_session_prefix 'agent-'
+  fi
 }
 
 is_managed_session() {
@@ -28,16 +32,44 @@ is_managed_session() {
 # they are running directly in a tmux pane (manual, non-managed sessions).
 # Override with: set -g @agent_detect_commands 'pi codex claude aider'
 detect_commands() {
-  get_tmux_option @agent_detect_commands 'pi codex claude'
+  if [ -n "${AGENT_DETECT_COMMANDS:-}" ]; then
+    printf '%s' "$AGENT_DETECT_COMMANDS"
+  else
+    get_tmux_option @agent_detect_commands 'pi codex claude'
+  fi
+}
+
+# wrapper_commands
+# Space-separated list of command basenames whose descendants may contain a
+# real agent process. Keeping this narrow avoids scanning every ordinary shell,
+# editor, or build pane on each picker/status refresh. Override with:
+#   set -g @agent_detect_wrappers 'node bun npx npm pnpm yarn my-wrapper'
+wrapper_commands() {
+  if [ -n "${AGENT_DETECT_WRAPPERS:-}" ]; then
+    printf '%s' "$AGENT_DETECT_WRAPPERS"
+  else
+    get_tmux_option @agent_detect_wrappers 'node bun npx npm pnpm yarn'
+  fi
+}
+
+# contains_word <word> <space-separated-list>
+contains_word() {
+  case " $2 " in
+  *" $1 "*) return 0 ;;
+  *) return 1 ;;
+  esac
 }
 
 # is_detected_command <command-basename>
 # Succeeds when <command-basename> is in the detect_commands list.
 is_detected_command() {
-  case " $(detect_commands) " in
-  *" $1 "*) return 0 ;;
-  *) return 1 ;;
-  esac
+  contains_word "$1" "$(detect_commands)"
+}
+
+# is_wrapper_command <command-basename>
+# Succeeds when <command-basename> is allowed to trigger process-subtree scans.
+is_wrapper_command() {
+  contains_word "$1" "$(wrapper_commands)"
 }
 
 # resolve_pane_agent <pane-current-command> <pane-pid>
@@ -55,6 +87,9 @@ resolve_pane_agent() {
     return 0
   fi
   [ -n "$pid" ] || return 1
+  # Only known wrappers get a process-subtree scan. Walking every non-agent pane
+  # is expensive in large tmux workspaces and status.sh runs repeatedly.
+  is_wrapper_command "$cmd" || return 1
   # ps may be unavailable in minimal environments; fail quietly if so.
   command -v ps >/dev/null 2>&1 || return 1
   # Breadth-first walk of the process subtree rooted at $pid.

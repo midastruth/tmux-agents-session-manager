@@ -9,13 +9,21 @@
 #                         Lets one status-right slot show the agents badge while
 #                         active and e.g. the hostname otherwise.
 #
-# Counts both managed agent sessions and manually-started agent panes, reading
-# the same @agent_state options the picker uses. Only non-zero groups
-# are shown; prints nothing when there are no agent sessions at all.
+# Counts self-reported agent states only. Managed agent sessions are identified
+# by the configured session prefix; manual panes are counted only when an agent
+# integration has written pane-scoped @agent_state. This script intentionally
+# does not inspect pane commands or walk process trees, so it is safe to run from
+# status-right frequently. Discovery of manual panes happens in picker.sh when
+# prefix+u is pressed.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
+
+# Cache the session prefix for this invocation. status.sh can run every second,
+# so it must not do command/process discovery here.
+AGENT_SESSION_PREFIX="$(agent_session_prefix)"
+export AGENT_SESSION_PREFIX
 
 # Fallback text shown when there is no active summary (e.g. a hostname).
 fallback=""
@@ -67,21 +75,26 @@ count_state() {
   total=$((total + 1))
 }
 
-# Managed sessions (session-scoped @agent_state).
-while IFS= read -r s; do
+# Managed sessions (session-scoped @agent_state). Read state in the list call to
+# avoid one extra tmux process per session on every status refresh.
+while IFS=$'\t' read -r s state; do
   [ -z "$s" ] && continue
   is_managed_session "$s" || continue
-  count_state "$(tmux show-options -qv -t "$s" @agent_state 2>/dev/null)"
-done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
+  [ -n "$state" ] || continue
+  count_state "$state"
+done < <(tmux list-sessions -F '#{session_name}	#{@agent_state}' 2>/dev/null)
 
-# Manual agent panes (pane-scoped @agent_state), commands from
-# @agent_detect_commands. resolve_pane_agent also catches wrapped agents
-# (codex runs under node).
-while IFS=$'\t' read -r s pane cmd ppid; do
+# Manual agent panes. Do not discover agents from process names here: status.sh
+# runs from status-right and may execute every second. A manual pane is counted
+# only after pi/codex/claude/etc. self-reports by writing pane-scoped
+# @agent_state via scripts/state.sh or an equivalent integration.
+while IFS=$'\t' read -r s pane; do
+  [ -z "$pane" ] && continue
   is_managed_session "$s" && continue
-  resolve_pane_agent "${cmd##*/}" "$ppid" >/dev/null || continue
-  count_state "$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null)"
-done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}' 2>/dev/null)
+  state="$(tmux show-options -pqv -t "$pane" @agent_state)" || exit $?
+  [ -n "$state" ] || continue
+  count_state "$state"
+done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}' 2>/dev/null)
 
 # Nothing to show.
 [ "$total" -eq 0 ] && { printf '%s' "$fallback"; exit 0; }

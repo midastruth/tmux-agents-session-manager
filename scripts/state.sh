@@ -10,14 +10,20 @@
 now="$(date +%s)"
 state="${1:-idle}"
 
-# Pane-scoped: works for manual agent panes that share a tmux session.
-tmux set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null
-tmux set-option -p -t "$TMUX_PANE" @agent_state_at "$now" 2>/dev/null
+# Build one tmux invocation instead of spawning a process for every option.
+args=(
+  set-option -p -t "$TMUX_PANE" @agent_state "$state"
+  \; set-option -p -t "$TMUX_PANE" @agent_state_at "$now"
+)
 
 # Session-scoped: keeps managed sessions working as before.
 session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
 if [ -n "$session" ]; then
-  tmux set-option -t "$session" @agent_state "$state"
-  tmux set-option -t "$session" @agent_state_at "$now"
+  args+=(
+    \; set-option -t "$session" @agent_state "$state"
+    \; set-option -t "$session" @agent_state_at "$now"
+  )
 fi
+
+tmux "${args[@]}" 2>/dev/null
 exit 0

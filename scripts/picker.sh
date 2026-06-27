@@ -10,6 +10,13 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
 
+# Cache hot global options for this invocation. The picker enumerates every
+# session/pane and should not shell out to tmux for static config per row.
+AGENT_SESSION_PREFIX="$(agent_session_prefix)"
+AGENT_DETECT_COMMANDS="$(detect_commands)"
+AGENT_DETECT_WRAPPERS="$(wrapper_commands)"
+export AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS
+
 short_path() {
   printf '%s' "${1/#$HOME/~}"
 }
@@ -38,44 +45,39 @@ split_classify() {
 }
 
 emit_managed_rows() {
-  local now s state at path name rank label desc ago cmd tool
+  local now s state at path cmd tool name rank label desc ago
   now=$(date +%s)
-  tmux list-sessions -F '#{session_name}' 2>/dev/null | while IFS= read -r s; do
-    is_managed_session "$s" || continue
-    state=$(tmux show-options -qv -t "$s" @agent_state 2>/dev/null)
-    at=$(tmux show-options -qv -t "$s" @agent_state_at 2>/dev/null)
-    path=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
-    name=${path##*/}
-    # The agent recorded at launch, falling back to whatever runs in the pane.
-    tool=$(tmux show-options -qv -t "$s" @agent_tool 2>/dev/null)
-    [ -n "$tool" ] || {
-      cmd=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
-      tool=${cmd##*/}
-    }
-    split_classify "$state"
-    if [ -n "$at" ]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
-    # rank \t kind \t target \t label \t name \t age \t path \t desc \t tool
-    printf '%s\tsession\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$rank" "$s" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$tool"
-  done
+  tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}	#{pane_current_path}	#{@agent_tool}	#{pane_current_command}' 2>/dev/null |
+    while IFS=$'\t' read -r s state at path tool cmd; do
+      is_managed_session "$s" || continue
+      name=${path##*/}
+      # The agent recorded at launch, falling back to whatever runs in the pane.
+      [ -n "$tool" ] || tool=${cmd##*/}
+      split_classify "$state"
+      if [ -n "$at" ]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
+      # rank \t kind \t target \t label \t name \t age \t path \t desc \t tool
+      printf '%s\tsession\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rank" "$s" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$tool"
+    done
 }
 
 emit_manual_rows() {
-  local now s pane cmd ppid path base name state at rank label desc ago
+  local now s pane cmd ppid path state at base name rank label desc ago
   now=$(date +%s)
   tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null |
     while IFS=$'\t' read -r s pane cmd ppid path; do
       # Managed sessions are already listed as managed agent sessions.
       is_managed_session "$s" && continue
       # Resolve the agent name, including wrappers (codex runs under node) by
-      # walking the pane's process subtree. Empty -> not an agent pane.
+      # walking the pane's process subtree only for known wrapper commands.
+      # Empty -> not an agent pane.
       base="$(resolve_pane_agent "${cmd##*/}" "$ppid")" || continue
       [ -n "$base" ] || continue
       name=${path##*/}
       # Per-pane state, written by the extension/state.sh when loaded. Falls back
       # to a plain "manual" marker when no status extension is attached.
-      state=$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null)
-      at=$(tmux show-options -pqv -t "$pane" @agent_state_at 2>/dev/null)
+      state="$(tmux show-options -pqv -t "$pane" @agent_state)" || exit $?
+      at="$(tmux show-options -pqv -t "$pane" @agent_state_at)" || exit $?
       if [ -n "$state" ]; then
         split_classify "$state"
       else

@@ -26,22 +26,29 @@ function currentTmuxSession(): string | undefined {
 function setState(state: "blocked" | "working" | "done" | "idle") {
   if (!VALID_STATES.has(state)) return;
   const now = Math.floor(Date.now() / 1000).toString();
+  const args: string[] = [];
+  const addTmuxCommand = (command: string[]) => {
+    if (args.length > 0) args.push(";");
+    args.push(...command);
+  };
 
   // Pane-scoped state: works for manual agent panes, where many panes can share
   // one tmux session and a session-level option would collide.
   const pane = process.env.TMUX_PANE;
   if (pane) {
-    runTmux(["set-option", "-p", "-t", pane, "@agent_state", state]);
-    runTmux(["set-option", "-p", "-t", pane, "@agent_state_at", now]);
+    addTmuxCommand(["set-option", "-p", "-t", pane, "@agent_state", state]);
+    addTmuxCommand(["set-option", "-p", "-t", pane, "@agent_state_at", now]);
   }
 
   // Session-scoped state: keeps managed sessions (one agent per session)
   // working as before.
   const session = currentTmuxSession();
   if (session) {
-    runTmux(["set-option", "-t", session, "@agent_state", state]);
-    runTmux(["set-option", "-t", session, "@agent_state_at", now]);
+    addTmuxCommand(["set-option", "-t", session, "@agent_state", state]);
+    addTmuxCommand(["set-option", "-t", session, "@agent_state_at", now]);
   }
+
+  if (args.length > 0) runTmux(args);
 }
 
 export default function piTmuxStateExtension(pi: ExtensionAPI) {

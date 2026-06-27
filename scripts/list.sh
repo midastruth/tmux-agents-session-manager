@@ -5,6 +5,11 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
 
+# Avoid reading the same tmux option once per client while locating host/nested
+# sessions.
+AGENT_SESSION_PREFIX="$(agent_session_prefix)"
+export AGENT_SESSION_PREFIX
+
 w="$(get_tmux_option @agent_popup_width '90%')"
 h="$(get_tmux_option @agent_popup_height '90%')"
 

@@ -23,7 +23,8 @@ or swap agents via `@agent_agents`.
   current directory.
 - ❌ **Quick kill** (`ctrl-x`) from the picker.
 - 📊 **Status-line summary** (opt-in): a compact `agents 1● 2✦ 1✓` badge in
-  `status-right` counting blocked / working / done sessions at a glance.
+  `status-right` counting self-reported blocked / working / done states without
+  scanning process trees on every refresh.
 
 ## Prerequisites
 
@@ -84,7 +85,9 @@ Inside the picker:
 Sessions marked `done` sort near the top so finished work is easy to find.
 Manual panes are detected when their current tmux command is one of
 `@agent_detect_commands` (default `pi codex claude`), so an agent started by typing
-its command in a normal tmux pane is also found with `prefix` + `u`.
+its command in a normal tmux pane is also found with `prefix` + `u`. For wrapped
+CLIs such as Node-based launchers, only commands in `@agent_detect_wrappers` are
+scanned for child agent processes to keep large tmux workspaces responsive.
 
 ## Managing pi, codex, and claude
 
@@ -104,6 +107,7 @@ claude=claude"
   directory can run pi *and* codex *and* claude simultaneously without colliding.
 - The picker shows a **tool column** so each row is clearly pi, codex, or claude.
 - `@agent_detect_commands` controls which manually-started panes are auto-listed.
+- `@agent_detect_wrappers` controls which wrapper commands (default `node bun npx npm pnpm yarn`) are allowed to trigger a child-process scan.
 
 Make sure each agent's command is on your `PATH` (`pi`, `codex`, `claude`).
 Only **pi** reports live `working` / `done` status out of the box via its
@@ -152,8 +156,10 @@ its bundled extension.
 
 ## Status line summary
 
-Show a compact badge of agent session states in your tmux status bar, so you know
-when work finished or got blocked without opening the picker.
+Show a compact badge of self-reported agent states in your tmux status bar, so
+you know when work finished or got blocked without opening the picker. The status
+script does not discover agents by inspecting commands or walking process trees;
+manual-pane discovery is reserved for the picker (`prefix` + `u`).
 
 Enable auto-injection into `status-right`:
 
@@ -175,9 +181,9 @@ agents 1● 2✦ 1✓
 | `✓`     | `done`    | finished, unseen       |
 | `·`     | `idle`    | hidden unless enabled  |
 
-Only non-zero groups appear, and nothing is printed when there are no agent
-sessions. Prefer to place it yourself? Skip `@agent_status` and embed the script
-directly:
+Only non-zero groups appear, and nothing is printed when there are no reported
+agent states. Prefer to place it yourself? Skip `@agent_status` and embed the
+script directly:
 
 ```tmux
 set -g status-right '#(~/clone/path/tmux-agents-session-manager/scripts/status.sh) %H:%M'
@@ -185,8 +191,8 @@ set -g status-right '#(~/clone/path/tmux-agents-session-manager/scripts/status.s
 
 ### Fallback slot (`--or` / `--or-host`)
 
-When there are no agent sessions the script prints nothing. To reuse the same
-status-right slot for something else when idle, pass a fallback:
+When there are no reported agent states the script prints nothing. To reuse the
+same status-right slot for something else when idle, pass a fallback:
 
 ```tmux
 # Show the agents badge while active, otherwise the short hostname.
@@ -222,6 +228,7 @@ set -g @agent_default_command 'pi'       # pi's command; default loads bundled e
 set -g @agent_agents         '...'      # name=command registry of launchable agents (see below)
 set -g @agent_launch_menu    'on'       # 'off' skips the agent menu on prefix+y
 set -g @agent_detect_commands 'pi codex claude'  # manual-pane commands to auto-list
+set -g @agent_detect_wrappers 'node bun npx npm pnpm yarn' # wrappers to scan for child agents
 set -g @agent_session_prefix 'agent-'   # tmux session name prefix
 set -g @agent_popup_width    '90%'      # popup width
 set -g @agent_popup_height   '90%'      # popup height
@@ -270,9 +277,13 @@ set -g @agent_default_command "pi -e '/path/to/tmux-agents-session-manager/exten
 - The bundled **Pi extension** updates `@agent_state` / `@agent_state_at` as Pi starts
   and finishes turns; other agents can do the same via `scripts/state.sh`.
 - The **picker** lists tmux sessions matching the prefix and non-prefixed panes
-  whose current command is in `@agent_detect_commands`, reads state for managed
-  sessions, shows a live `capture-pane` preview and a per-row tool column, and
-  jumps to the selected session or pane.
+  whose current command is in `@agent_detect_commands` (or a configured wrapper
+  whose child process matches), reads state for managed sessions, shows a live
+  `capture-pane` preview and a per-row tool column, and jumps to the selected
+  session or pane. This is where process discovery happens.
+- The **status-line script** only reads self-reported `@agent_state` values from
+  managed sessions and panes; it does not scan commands or process trees, so it
+  is safe to run frequently from `status-right`.
 - Pressing `prefix` + `u` from inside an agent popup first detaches that popup,
   then reopens the picker on the outer tmux client.
 
