@@ -35,7 +35,7 @@ sigil="$(get_tmux_option @agent_status_sigil 'agents')"
 # advancing one frame per second (driven by the caller's status-interval).
 # Enable with: set -g @agent_status_animate_working 'on'
 # Customise frames with: set -g @agent_status_anim_frames '✦ ✶ ✷ ✶'
-animate_working="$(get_tmux_option @agent_status_animate_working 'off')"
+animate_working="$(get_tmux_option @agent_status_animate_working 'on')"
 if [ "$animate_working" = on ]; then
   anim_frames="$(get_tmux_option @agent_status_anim_frames '✦ ✶ ✷ ✶')"
   # shellcheck disable=SC2206
@@ -51,7 +51,7 @@ col_done="$(get_tmux_option @agent_status_color_done 'cyan')"
 col_blocked="$(get_tmux_option @agent_status_color_blocked 'red')"
 col_idle="$(get_tmux_option @agent_status_color_idle 'green')"
 # Whether to emit #[fg=...] colour escapes (only meaningful inside status line).
-use_color="$(get_tmux_option @agent_status_color 'on')"
+use_color="$(get_tmux_option @agent_status_color 'off')"
 # Show idle count too? Off by default to keep the line quiet.
 show_idle="$(get_tmux_option @agent_status_show_idle 'off')"
 

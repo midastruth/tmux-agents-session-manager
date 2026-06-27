@@ -233,7 +233,7 @@ Status-line options (only relevant with `@agent_status on` or manual embedding):
 set -g @agent_status            'off'   # 'on' auto-appends the summary to status-right
 set -g @agent_status_interval   '5'     # max seconds between refreshes
 set -g @agent_status_show_idle  'off'   # also count idle sessions
-set -g @agent_status_color      'on'    # emit #[fg=...] colours
+set -g @agent_status_color      'off'   # emit #[fg=...] colours
 set -g @agent_status_sigil      'agents'    # leading marker
 set -g @agent_status_icon_blocked '●'   # per-state icons
 set -g @agent_status_icon_working '✦'
@@ -243,7 +243,7 @@ set -g @agent_status_color_blocked 'red'    # per-state colours (tmux colour nam
 set -g @agent_status_color_working 'yellow'
 set -g @agent_status_color_done    'cyan'
 set -g @agent_status_color_idle    'green'
-set -g @agent_status_animate_working 'off'  # 'on' animates the working icon
+set -g @agent_status_animate_working 'on'   # 'on' animates the working icon
 set -g @agent_status_anim_frames     '✦ ✶ ✷ ✶'  # spinner frames (space-separated)
 ```
 
