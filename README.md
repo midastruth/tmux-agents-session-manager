@@ -293,6 +293,15 @@ set -g @agent_default_command "pi -e '/path/to/tmux-agents-session-manager/exten
 Configuration uses the `@agent_*` option namespace (for example
 `@agent_state`). Old Pi-prefixed option names are not read or written.
 
-## License
+## Development
 
-[MIT](LICENSE)
+Run the lightweight unit test suite with:
+
+```sh
+bash tests/run.sh
+```
+
+The tests use a local fake `tmux` binary, so they do not require a running tmux
+server or external test framework.
+
+

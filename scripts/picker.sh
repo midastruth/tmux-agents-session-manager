@@ -18,7 +18,11 @@ AGENT_DETECT_WRAPPERS="$(wrapper_commands)"
 export AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS
 
 short_path() {
-  printf '%s' "${1/#$HOME/~}"
+  case "$1" in
+  "$HOME")   printf '~' ;;
+  "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;;
+  *)          printf '%s' "$1" ;;
+  esac
 }
 
 # classify <state>  ->  prints "<rank>\t<label>\t<desc>"
