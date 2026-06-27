@@ -9,7 +9,7 @@ one popup.
 This is a tmux plugin for people who launch coding agents per project directory.
 It keeps one nested tmux session per directory/agent and gives you a central
 picker for all of them. Out of the box it manages **pi, codex, and claude**; add
-or swap agents via `@pi_agents`.
+or swap agents via `@agent_agents`.
 
 ## Features
 
@@ -22,14 +22,14 @@ or swap agents via `@pi_agents`.
 - 🚀 **Launcher** (`prefix` + `y`) to open or attach an agent session for the
   current directory.
 - ❌ **Quick kill** (`ctrl-x`) from the picker.
-- 📊 **Status-line summary** (opt-in): a compact `agents π 1● 2▶ 1✓` badge in
+- 📊 **Status-line summary** (opt-in): a compact `agents 1● 2✦ 1✓` badge in
   `status-right` counting blocked / working / done sessions at a glance.
 
 ## Prerequisites
 
 - **tmux ≥ 3.2** for `display-popup`
 - **fzf** for the picker UI
-- **Pi** CLI (`pi` command)
+- **Pi** CLI (`pi` command) for the default Pi agent (other agents can be configured instead)
 - bash; macOS or Linux
 
 For best Pi keyboard behavior inside tmux, Pi recommends:
@@ -78,32 +78,32 @@ Inside the picker:
 | Key                       | Action                                                                    |
 | ------------------------- | ------------------------------------------------------------------------- |
 | `enter`                   | Jump to the session/pane; managed sessions resume in the popup            |
-| `ctrl-x`                  | Kill a managed session, or send `Ctrl-C` to a manual `pi` pane            |
+| `ctrl-x`                  | Kill a managed session, or send `Ctrl-C` to a manual agent pane           |
 | `↑` / `↓`, type to filter | fzf navigation                                                            |
 
 Sessions marked `done` sort near the top so finished work is easy to find.
 Manual panes are detected when their current tmux command is one of
-`@pi_detect_commands` (default `pi codex claude`), so an agent started by typing
+`@agent_detect_commands` (default `pi codex claude`), so an agent started by typing
 its command in a normal tmux pane is also found with `prefix` + `u`.
 
 ## Managing pi, codex, and claude
 
 The plugin manages multiple agents at once. The launchable agents are defined by
-the `@pi_agents` registry (one `name=command` per line); the default is:
+the `@agent_agents` registry (one `name=command` per line); the default is:
 
 ```tmux
-set -g @pi_agents "pi=pi -e '/path/to/extensions/tmux-state.ts'
+set -g @agent_agents "pi=pi -e '/path/to/extensions/tmux-state.ts'
 codex=codex
 claude=claude"
 ```
 
 - `prefix` + `y` shows a menu of these agents (pi/codex/claude). Pick one and it
   opens in a popup for the current directory. With a single agent configured,
-  or `@pi_launch_menu off`, it launches directly with no menu.
-- Sessions are **namespaced per agent** (`pi-<agent>-<hash>`), so the same
+  or `@agent_launch_menu off`, it launches directly with no menu.
+- Sessions are **namespaced per agent** (`agent-<agent>-<hash>`), so the same
   directory can run pi *and* codex *and* claude simultaneously without colliding.
 - The picker shows a **tool column** so each row is clearly pi, codex, or claude.
-- `@pi_detect_commands` controls which manually-started panes are auto-listed.
+- `@agent_detect_commands` controls which manually-started panes are auto-listed.
 
 Make sure each agent's command is on your `PATH` (`pi`, `codex`, `claude`).
 Only **pi** reports live `working` / `done` status out of the box via its
@@ -128,7 +128,7 @@ The extension writes these tmux options on the nested Pi session:
 
 Opening a `done` session from the picker or launcher marks it `idle` again.
 
-If you override `@pi_command` and do not load the extension, the picker still
+If you override `@agent_default_command` and do not load the extension, the picker still
 lists, previews, jumps, and kills sessions; status may stay `idle` or show
 `unknown`.
 
@@ -137,7 +137,7 @@ lists, previews, jumps, and kills sessions; status may stay `idle` or show
 Codex, Claude Code, and any other agent are managed (listed, previewed, jumped,
 killed) without any extra setup — but they show `unknown` status until they
 report state. The state layer is agent-agnostic: anything that runs
-`scripts/state.sh <state>` updates the same `@pi_state` the picker and status
+`scripts/state.sh <state>` updates the same `@agent_state` the picker and status
 line read.
 
 ```sh
@@ -158,25 +158,25 @@ when work finished or got blocked without opening the picker.
 Enable auto-injection into `status-right`:
 
 ```tmux
-set -g @pi_status on
+set -g @agent_status on
 ```
 
 This appends `#(.../scripts/status.sh)` to `status-right` and tightens
 `status-interval` so it refreshes promptly. Output looks like:
 
 ```
-agents π 1● 2▶ 1✓
+agents 1● 2✦ 1✓
 ```
 
 | Segment | State     | Meaning                |
 | ------- | --------- | ---------------------- |
 | `●`     | `blocked` | needs input (shown first) |
-| `▶`     | `working` | actively running       |
+| `✦`     | `working` | actively running       |
 | `✓`     | `done`    | finished, unseen       |
 | `·`     | `idle`    | hidden unless enabled  |
 
 Only non-zero groups appear, and nothing is printed when there are no agent
-sessions. Prefer to place it yourself? Skip `@pi_status` and embed the script
+sessions. Prefer to place it yourself? Skip `@agent_status` and embed the script
 directly:
 
 ```tmux
@@ -204,83 +204,82 @@ it would be passed through literally.
 Give the `working` count a subtle spinner so active turns stand out:
 
 ```tmux
-set -g @pi_status_animate_working 'on'
-set -g @pi_status_anim_frames     '✦ ✶ ✷ ✶'   # space-separated frames
+set -g @agent_status_animate_working 'on'
+set -g @agent_status_anim_frames     '✦ ✶ ✷ ✶'   # space-separated frames
 ```
 
 Frames advance roughly once per second (driven by `status-interval`), so keep
-`@pi_status_interval` low for a smooth animation.
+`@agent_status_interval` low for a smooth animation.
 
 ## Options
 
 Set any of these before the plugin loads:
 
 ```tmux
-set -g @pi_launch_key     'y'        # prefix key: launch/open for current dir
-set -g @pi_list_key       'u'        # prefix key: open the picker
-set -g @pi_command        'pi'       # pi's command; default loads bundled extension
-set -g @pi_agents         '...'      # name=command registry of launchable agents (see below)
-set -g @pi_launch_menu    'on'       # 'off' skips the agent menu on prefix+y
-set -g @pi_detect_commands 'pi codex claude'  # manual-pane commands to auto-list
-set -g @pi_session_prefix 'pi-'      # tmux session name prefix
-set -g @pi_popup_width    '90%'      # popup width
-set -g @pi_popup_height   '90%'      # popup height
+set -g @agent_launch_key     'y'        # prefix key: launch/open for current dir
+set -g @agent_list_key       'u'        # prefix key: open the picker
+set -g @agent_default_command 'pi'       # pi's command; default loads bundled extension
+set -g @agent_agents         '...'      # name=command registry of launchable agents (see below)
+set -g @agent_launch_menu    'on'       # 'off' skips the agent menu on prefix+y
+set -g @agent_detect_commands 'pi codex claude'  # manual-pane commands to auto-list
+set -g @agent_session_prefix 'agent-'   # tmux session name prefix
+set -g @agent_popup_width    '90%'      # popup width
+set -g @agent_popup_height   '90%'      # popup height
 ```
 
-Status-line options (only relevant with `@pi_status on` or manual embedding):
+Status-line options (only relevant with `@agent_status on` or manual embedding):
 
 ```tmux
-set -g @pi_status            'off'   # 'on' auto-appends the summary to status-right
-set -g @pi_status_interval   '5'     # max seconds between refreshes
-set -g @pi_status_show_idle  'off'   # also count idle sessions
-set -g @pi_status_color      'on'    # emit #[fg=...] colours
-set -g @pi_status_sigil      'agents π'  # leading marker
-set -g @pi_status_icon_blocked '●'   # per-state icons
-set -g @pi_status_icon_working '▶'
-set -g @pi_status_icon_done    '✓'
-set -g @pi_status_icon_idle    '·'
-set -g @pi_status_color_blocked 'red'    # per-state colours (tmux colour names)
-set -g @pi_status_color_working 'yellow'
-set -g @pi_status_color_done    'cyan'
-set -g @pi_status_color_idle    'green'
-set -g @pi_status_animate_working 'off'  # 'on' animates the working icon
-set -g @pi_status_anim_frames     '✦ ✶ ✷ ✶'  # spinner frames (space-separated)
+set -g @agent_status            'off'   # 'on' auto-appends the summary to status-right
+set -g @agent_status_interval   '5'     # max seconds between refreshes
+set -g @agent_status_show_idle  'off'   # also count idle sessions
+set -g @agent_status_color      'on'    # emit #[fg=...] colours
+set -g @agent_status_sigil      'agents'    # leading marker
+set -g @agent_status_icon_blocked '●'   # per-state icons
+set -g @agent_status_icon_working '✦'
+set -g @agent_status_icon_done    '✓'
+set -g @agent_status_icon_idle    '·'
+set -g @agent_status_color_blocked 'red'    # per-state colours (tmux colour names)
+set -g @agent_status_color_working 'yellow'
+set -g @agent_status_color_done    'cyan'
+set -g @agent_status_color_idle    'green'
+set -g @agent_status_animate_working 'off'  # 'on' animates the working icon
+set -g @agent_status_anim_frames     '✦ ✶ ✷ ✶'  # spinner frames (space-separated)
 ```
 
 The status script also exposes a path-free reference via the
-`@pi_status_script` tmux option (set by the plugin on load), so your config
+`@agent_status_script` tmux option (set by the plugin on load), so your config
 never has to hardcode the install directory:
 
 ```tmux
-set -g status-right '#(#{@pi_status_script} --or-host)'
+set -g status-right '#(#{@agent_status_script} --or-host)'
 ```
 
-The actual default for `@pi_command` is equivalent to:
+The actual default for `@agent_default_command` is equivalent to:
 
 ```tmux
-set -g @pi_command "pi -e '/path/to/tmux-agents-session-manager/extensions/tmux-state.ts'"
+set -g @agent_default_command "pi -e '/path/to/tmux-agents-session-manager/extensions/tmux-state.ts'"
 ```
 
 ## How it works
 
-- The **launcher** picks an agent from `@pi_agents` (or launches the default),
-  creates a detached `pi-<agent>-<hash-of-dir>` tmux session running that agent,
-  records the origin window in `@pi_origin` and the agent in `@pi_tool`, then
+- The **launcher** picks an agent from `@agent_agents` (or launches the default),
+  creates a detached `agent-<agent>-<hash-of-dir>` tmux session running that agent,
+  records the origin window in `@agent_origin` and the agent in `@agent_tool`, then
   attaches to it in a popup.
-- The bundled **Pi extension** updates `@pi_state` / `@pi_state_at` as Pi starts
+- The bundled **Pi extension** updates `@agent_state` / `@agent_state_at` as Pi starts
   and finishes turns; other agents can do the same via `scripts/state.sh`.
 - The **picker** lists tmux sessions matching the prefix and non-prefixed panes
-  whose current command is in `@pi_detect_commands`, reads state for managed
+  whose current command is in `@agent_detect_commands`, reads state for managed
   sessions, shows a live `capture-pane` preview and a per-row tool column, and
   jumps to the selected session or pane.
 - Pressing `prefix` + `u` from inside an agent popup first detaches that popup,
   then reopens the picker on the outer tmux client.
 
-## Compatibility
+## Naming
 
-The old `claude_session_manager.tmux` and `pi_session_manager.tmux` files remain
-as compatibility wrappers, but new configs should use `agents_session_manager.tmux`
-and the `@pi_*` options.
+Configuration uses the `@agent_*` option namespace (for example
+`@agent_state`). Old Pi-prefixed option names are not read or written.
 
 ## License
 

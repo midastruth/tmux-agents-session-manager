@@ -9,18 +9,18 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/helpers.sh
 . "$CURRENT_DIR/scripts/helpers.sh"
 
-launch_key="$(get_tmux_option @pi_launch_key 'y')"
-list_key="$(get_tmux_option @pi_list_key 'u')"
+launch_key="$(get_tmux_option @agent_launch_key 'y')"
+list_key="$(get_tmux_option @agent_list_key 'u')"
 
 # Export the absolute path to status.sh as a tmux option so user config never
 # has to hardcode this plugin's install directory. Reference it from
-# status-right like:  #(#{@pi_status_script} --or-host)
+# status-right like:  #(#{@agent_status_script} --or-host)
 # This decouples the user's status line from where the plugin lives on disk.
-tmux set-option -gq @pi_status_script "$CURRENT_DIR/scripts/status.sh"
+tmux set-option -gq @agent_status_script "$CURRENT_DIR/scripts/status.sh"
 
 # Launch (or re-attach to) an agent session for the current pane's directory.
 # launch_menu.sh offers a picker when multiple agents are configured via
-# @pi_agents (pi/codex/claude...), otherwise it launches directly.
+# @agent_agents (pi/codex/claude...), otherwise it launches directly.
 # #{pane_current_path} / #{window_id} are expanded by run-shell before the args
 # reach the script.
 tmux bind-key "$launch_key" \
@@ -32,11 +32,11 @@ tmux bind-key "$list_key" \
   run-shell "$CURRENT_DIR/scripts/list.sh '#{client_name}'"
 
 # Optional: append a compact agent status summary to status-right.
-# Enable with `set -g @pi_status on`. The interval (seconds) controls how often
-# tmux re-runs the summary; status-interval also bounds it.
-status_enabled="$(get_tmux_option @pi_status 'off')"
+# Enable with `set -g @agent_status on`. The interval (seconds)
+# controls how often tmux re-runs the summary; status-interval also bounds it.
+status_enabled="$(get_tmux_option @agent_status 'off')"
 if [ "$status_enabled" = on ]; then
-  status_interval="$(get_tmux_option @pi_status_interval '5')"
+  status_interval="$(get_tmux_option @agent_status_interval '5')"
   summary="#($CURRENT_DIR/scripts/status.sh)"
   current_right="$(tmux show-option -gqv status-right)"
   # Avoid appending twice on plugin reload.

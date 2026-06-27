@@ -27,20 +27,20 @@ function setState(state: "blocked" | "working" | "done" | "idle") {
   if (!VALID_STATES.has(state)) return;
   const now = Math.floor(Date.now() / 1000).toString();
 
-  // Pane-scoped state: works for manual `pi` panes, where many panes can share
+  // Pane-scoped state: works for manual agent panes, where many panes can share
   // one tmux session and a session-level option would collide.
   const pane = process.env.TMUX_PANE;
   if (pane) {
-    runTmux(["set-option", "-p", "-t", pane, "@pi_state", state]);
-    runTmux(["set-option", "-p", "-t", pane, "@pi_state_at", now]);
+    runTmux(["set-option", "-p", "-t", pane, "@agent_state", state]);
+    runTmux(["set-option", "-p", "-t", pane, "@agent_state_at", now]);
   }
 
-  // Session-scoped state: keeps managed `pi-<hash>` sessions (one pi per
-  // session) working as before.
+  // Session-scoped state: keeps managed sessions (one agent per session)
+  // working as before.
   const session = currentTmuxSession();
   if (session) {
-    runTmux(["set-option", "-t", session, "@pi_state", state]);
-    runTmux(["set-option", "-t", session, "@pi_state_at", now]);
+    runTmux(["set-option", "-t", session, "@agent_state", state]);
+    runTmux(["set-option", "-t", session, "@agent_state_at", now]);
   }
 }
 

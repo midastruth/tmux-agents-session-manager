@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# Open the Pi session picker in a popup.
+# Open the agent session picker in a popup.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
 
-prefix="$(get_tmux_option @pi_session_prefix 'pi-')"
-w="$(get_tmux_option @pi_popup_width '90%')"
-h="$(get_tmux_option @pi_popup_height '90%')"
+w="$(get_tmux_option @agent_popup_width '90%')"
+h="$(get_tmux_option @agent_popup_height '90%')"
 
-# The session of a client attached to a prefixed session — i.e. the popup we are
+# The session of a client attached to a managed session — i.e. the popup we are
 # inside, if any. Empty when invoked from a normal (non-popup) pane.
 nested_session() {
+  local client session
   tmux list-clients -F '#{client_name} #{session_name}' 2>/dev/null |
-    awk -v p="$prefix" 'index($2, p) == 1 { print $2; exit }'
+    while read -r client session; do
+      is_managed_session "$session" && { printf '%s\n' "$session"; return; }
+    done
 }
 
-# A client NOT attached to a prefixed session — the outer client that should host
+# A client NOT attached to a managed session — the outer client that should host
 # the picker popup.
 host_client() {
+  local client session
   tmux list-clients -F '#{client_name} #{session_name}' 2>/dev/null |
-    awk -v p="$prefix" 'index($2, p) != 1 { print $1; exit }'
+    while read -r client session; do
+      is_managed_session "$session" || { printf '%s\n' "$client"; return; }
+    done
 }
 
 # If we are inside a session popup, close it (detach its client)
@@ -35,7 +40,7 @@ if [ -n "$sess" ]; then
 fi
 
 host="$(host_client)"
-tmux set-option -g @pi_parent "$host"
+tmux set-option -gq @agent_parent "$host"
 
 # Host the picker on the outer client. -c is honored because that client has no
 # popup open now; fall back to the default client if none was found.

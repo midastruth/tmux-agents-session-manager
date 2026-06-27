@@ -13,12 +13,22 @@ get_tmux_option() {
   fi
 }
 
+agent_session_prefix() {
+  get_tmux_option @agent_session_prefix 'agent-'
+}
+
+is_managed_session() {
+  local session="$1" prefix
+  prefix="$(agent_session_prefix)"
+  [[ "$session" == "$prefix"* ]]
+}
+
 # detect_commands
 # Space-separated list of agent commands the picker/status line auto-detect when
 # they are running directly in a tmux pane (manual, non-managed sessions).
-# Override with: set -g @pi_detect_commands 'pi codex claude aider'
+# Override with: set -g @agent_detect_commands 'pi codex claude aider'
 detect_commands() {
-  get_tmux_option @pi_detect_commands 'pi codex claude'
+  get_tmux_option @agent_detect_commands 'pi codex claude'
 }
 
 # is_detected_command <command-basename>
@@ -72,19 +82,22 @@ resolve_pane_agent() {
 # agents_config
 # Newline-separated "name=command" registry of launchable agents. The default
 # wires pi to the bundled status extension; codex and claude run bare. Override
-# the whole list with @pi_agents, or just pi's command with @pi_command.
-#   set -g @pi_agents 'pi=pi -e /path/ext.ts\ncodex=codex\nclaude=claude --foo'
-# <pi-default-command> is substituted for the pi entry's command when @pi_agents
-# is unset, so callers pass the extension-aware default in.
+# the whole list with @agent_agents, or just pi's command with
+# @agent_default_command.
+#   set -g @agent_agents 'pi=pi -e /path/ext.ts\ncodex=codex\nclaude=claude --foo'
+# <pi-default-command> is used for the pi entry's command when neither the
+# registry nor @agent_default_command is set, so callers pass the
+# extension-aware default in.
 agents_config() {
   local pi_default="$1"
-  local configured
-  configured="$(get_tmux_option @pi_agents '')"
+  local configured default_command
+  configured="$(get_tmux_option @agent_agents '')"
   if [ -n "$configured" ]; then
     printf '%b' "$configured"
     return
   fi
-  printf '%s\n' "pi=$pi_default" "codex=codex" "claude=claude"
+  default_command="$(get_tmux_option @agent_default_command "$pi_default")"
+  printf '%s\n' "pi=$default_command" "codex=codex" "claude=claude"
 }
 
 # agent_command <name> <pi-default-command>

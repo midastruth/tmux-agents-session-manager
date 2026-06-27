@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compact agent status summary for the tmux status line.
 #
-#   status.sh             Print a summary like "agents π 2▶ 1✓ 1●"; empty when no states.
+#   status.sh             Print a summary like "agents 2✦ 1✓ 1●"; empty when no states.
 #   status.sh --or <txt>  Same, but fall back to <txt> when there is no summary.
 #   status.sh --or-host   Fall back to the short hostname. Use this in tmux
 #                         status-right, where '#h' inside #(...) is NOT expanded
@@ -9,9 +9,9 @@
 #                         Lets one status-right slot show the agents badge while
 #                         active and e.g. the hostname otherwise.
 #
-# Counts both managed `pi-<hash>` sessions and manually-started agent panes,
-# reading the same @pi_state options the picker uses. Only non-zero groups are
-# shown; prints nothing when there are no agent sessions at all.
+# Counts both managed agent sessions and manually-started agent panes, reading
+# the same @agent_state options the picker uses. Only non-zero groups
+# are shown; prints nothing when there are no agent sessions at all.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
@@ -24,22 +24,20 @@ case "${1:-}" in
 --or-host) fallback="$(hostname -s 2>/dev/null || hostname 2>/dev/null)" ;;
 esac
 
-prefix="$(get_tmux_option @pi_session_prefix 'pi-')"
-
 # Icons/labels per state. Override via tmux options if desired.
-icon_working="$(get_tmux_option @pi_status_icon_working '✦')"
-icon_done="$(get_tmux_option @pi_status_icon_done '✓')"
-icon_blocked="$(get_tmux_option @pi_status_icon_blocked '●')"
-icon_idle="$(get_tmux_option @pi_status_icon_idle '·')"
-sigil="$(get_tmux_option @pi_status_sigil 'agents π')"
+icon_working="$(get_tmux_option @agent_status_icon_working '✦')"
+icon_done="$(get_tmux_option @agent_status_icon_done '✓')"
+icon_blocked="$(get_tmux_option @agent_status_icon_blocked '●')"
+icon_idle="$(get_tmux_option @agent_status_icon_idle '·')"
+sigil="$(get_tmux_option @agent_status_sigil 'agents')"
 
 # Animate the working icon by cycling through a space-separated list of frames,
 # advancing one frame per second (driven by the caller's status-interval).
-# Enable with: set -g @pi_status_animate_working 'on'
-# Customise frames with: set -g @pi_status_anim_frames '✦ ✶ ✷ ✶'
-animate_working="$(get_tmux_option @pi_status_animate_working 'off')"
+# Enable with: set -g @agent_status_animate_working 'on'
+# Customise frames with: set -g @agent_status_anim_frames '✦ ✶ ✷ ✶'
+animate_working="$(get_tmux_option @agent_status_animate_working 'off')"
 if [ "$animate_working" = on ]; then
-  anim_frames="$(get_tmux_option @pi_status_anim_frames '✦ ✶ ✷ ✶')"
+  anim_frames="$(get_tmux_option @agent_status_anim_frames '✦ ✶ ✷ ✶')"
   # shellcheck disable=SC2206
   frames=($anim_frames)
   if [ "${#frames[@]}" -gt 0 ]; then
@@ -48,14 +46,14 @@ if [ "$animate_working" = on ]; then
 fi
 
 # tmux colour names for #[fg=...]; empty disables colouring.
-col_working="$(get_tmux_option @pi_status_color_working 'yellow')"
-col_done="$(get_tmux_option @pi_status_color_done 'cyan')"
-col_blocked="$(get_tmux_option @pi_status_color_blocked 'red')"
-col_idle="$(get_tmux_option @pi_status_color_idle 'green')"
+col_working="$(get_tmux_option @agent_status_color_working 'yellow')"
+col_done="$(get_tmux_option @agent_status_color_done 'cyan')"
+col_blocked="$(get_tmux_option @agent_status_color_blocked 'red')"
+col_idle="$(get_tmux_option @agent_status_color_idle 'green')"
 # Whether to emit #[fg=...] colour escapes (only meaningful inside status line).
-use_color="$(get_tmux_option @pi_status_color 'on')"
+use_color="$(get_tmux_option @agent_status_color 'on')"
 # Show idle count too? Off by default to keep the line quiet.
-show_idle="$(get_tmux_option @pi_status_show_idle 'off')"
+show_idle="$(get_tmux_option @agent_status_show_idle 'off')"
 
 working=0 done_=0 blocked=0 idle=0 total=0
 
@@ -69,19 +67,20 @@ count_state() {
   total=$((total + 1))
 }
 
-# Managed sessions (session-scoped @pi_state).
+# Managed sessions (session-scoped @agent_state).
 while IFS= read -r s; do
   [ -z "$s" ] && continue
-  [[ "$s" == "$prefix"* ]] || continue
-  count_state "$(tmux show-options -qv -t "$s" @pi_state 2>/dev/null)"
+  is_managed_session "$s" || continue
+  count_state "$(tmux show-options -qv -t "$s" @agent_state 2>/dev/null)"
 done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
 
-# Manual agent panes (pane-scoped @pi_state), commands from @pi_detect_commands.
-# resolve_pane_agent also catches wrapped agents (codex runs under node).
+# Manual agent panes (pane-scoped @agent_state), commands from
+# @agent_detect_commands. resolve_pane_agent also catches wrapped agents
+# (codex runs under node).
 while IFS=$'\t' read -r s pane cmd ppid; do
-  [[ "$s" == "$prefix"* ]] && continue
+  is_managed_session "$s" && continue
   resolve_pane_agent "${cmd##*/}" "$ppid" >/dev/null || continue
-  count_state "$(tmux show-options -pqv -t "$pane" @pi_state 2>/dev/null)"
+  count_state "$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null)"
 done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}' 2>/dev/null)
 
 # Nothing to show.

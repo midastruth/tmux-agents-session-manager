@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codex `notify` hook: map Codex events to the picker's @pi_state.
+# Codex `notify` hook: map Codex events to the picker's @agent_state.
 #
 # Wire it up in ~/.codex/config.toml:
 #   notify = ["/path/to/tmux-agents-session-manager/scripts/codex_notify.sh"]

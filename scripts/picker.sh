@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Interactive picker for running Pi sessions.
+# Interactive picker for running agent sessions.
 #
 #   picker.sh           fzf picker; on enter, switches the parent client to the
 #                       chosen session's origin window and resumes it in the popup.
-#                       Manually-started `pi` panes are also listed and jumped to.
+#                       Manually-started agent panes are also listed and jumped to.
 #   picker.sh --list    print the rows only (used by fzf's ctrl-x reload).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
-
-prefix="$(get_tmux_option @pi_session_prefix 'pi-')"
 
 short_path() {
   printf '%s' "${1/#$HOME/~}"
@@ -43,13 +41,13 @@ emit_managed_rows() {
   local now s state at path name rank label desc ago cmd tool
   now=$(date +%s)
   tmux list-sessions -F '#{session_name}' 2>/dev/null | while IFS= read -r s; do
-    [[ "$s" == "$prefix"* ]] || continue
-    state=$(tmux show-options -qv -t "$s" @pi_state 2>/dev/null)
-    at=$(tmux show-options -qv -t "$s" @pi_state_at 2>/dev/null)
+    is_managed_session "$s" || continue
+    state=$(tmux show-options -qv -t "$s" @agent_state 2>/dev/null)
+    at=$(tmux show-options -qv -t "$s" @agent_state_at 2>/dev/null)
     path=$(tmux display-message -p -t "$s" '#{pane_current_path}' 2>/dev/null)
     name=${path##*/}
     # The agent recorded at launch, falling back to whatever runs in the pane.
-    tool=$(tmux show-options -qv -t "$s" @pi_tool 2>/dev/null)
+    tool=$(tmux show-options -qv -t "$s" @agent_tool 2>/dev/null)
     [ -n "$tool" ] || {
       cmd=$(tmux display-message -p -t "$s" '#{pane_current_command}' 2>/dev/null)
       tool=${cmd##*/}
@@ -67,8 +65,8 @@ emit_manual_rows() {
   now=$(date +%s)
   tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null |
     while IFS=$'\t' read -r s pane cmd ppid path; do
-      # Prefixed sessions are already listed as managed agent sessions.
-      [[ "$s" == "$prefix"* ]] && continue
+      # Managed sessions are already listed as managed agent sessions.
+      is_managed_session "$s" && continue
       # Resolve the agent name, including wrappers (codex runs under node) by
       # walking the pane's process subtree. Empty -> not an agent pane.
       base="$(resolve_pane_agent "${cmd##*/}" "$ppid")" || continue
@@ -76,8 +74,8 @@ emit_manual_rows() {
       name=${path##*/}
       # Per-pane state, written by the extension/state.sh when loaded. Falls back
       # to a plain "manual" marker when no status extension is attached.
-      state=$(tmux show-options -pqv -t "$pane" @pi_state 2>/dev/null)
-      at=$(tmux show-options -pqv -t "$pane" @pi_state_at 2>/dev/null)
+      state=$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null)
+      at=$(tmux show-options -pqv -t "$pane" @agent_state_at 2>/dev/null)
       if [ -n "$state" ]; then
         split_classify "$state"
       else
@@ -155,27 +153,27 @@ session)
   # Move the underlying parent client to the session's origin window (best-effort),
   # then resume the session in THIS popup over it. Falls back to resuming over the
   # current window when origin/parent are unknown.
-  origin=$(tmux show-options -qv -t "$target" @pi_origin 2>/dev/null)
-  parent=$(tmux show-options -gqv @pi_parent 2>/dev/null)
+  origin=$(tmux show-options -qv -t "$target" @agent_origin 2>/dev/null)
+  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
   [ -n "$origin" ] && [ -n "$parent" ] &&
     tmux switch-client -c "$parent" -t "$origin" 2>/dev/null
 
   # Opening a completed session marks it as seen.
-  if [ "$(tmux show-options -qv -t "$target" @pi_state 2>/dev/null)" = done ]; then
-    tmux set-option -t "$target" @pi_state idle
-    tmux set-option -t "$target" @pi_state_at "$(date +%s)"
+  if [ "$(tmux show-options -qv -t "$target" @agent_state 2>/dev/null)" = done ]; then
+    tmux set-option -t "$target" @agent_state idle
+    tmux set-option -t "$target" @agent_state_at "$(date +%s)"
   fi
 
   tmux attach-session -t "$target"
   ;;
 pane)
   # Opening a completed manual pane marks it as seen.
-  if [ "$(tmux show-options -pqv -t "$target" @pi_state 2>/dev/null)" = done ]; then
-    tmux set-option -p -t "$target" @pi_state idle
-    tmux set-option -p -t "$target" @pi_state_at "$(date +%s)"
+  if [ "$(tmux show-options -pqv -t "$target" @agent_state 2>/dev/null)" = done ]; then
+    tmux set-option -p -t "$target" @agent_state idle
+    tmux set-option -p -t "$target" @agent_state_at "$(date +%s)"
   fi
 
-  parent=$(tmux show-options -gqv @pi_parent 2>/dev/null)
+  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
   if [ -n "$parent" ]; then
     tmux switch-client -c "$parent" -t "$target" 2>/dev/null || tmux switch-client -t "$target"
   else
