@@ -308,7 +308,23 @@ Run the lightweight unit test suite with:
 bash tests/run.sh
 ```
 
+Run smoke performance checks for the hot paths (`status.sh` and
+`picker.sh --list`) with:
+
+```sh
+bash tests/perf_smoke.sh
+```
+
+The performance smoke test simulates 10/50/100 managed sessions plus manual
+agent panes using a local fake `tmux` binary. Tune or disable thresholds with:
+
+```sh
+PERF_ITERATIONS=10 PERF_MAX_STATUS_MS=2000 PERF_MAX_PICKER_MS=5000 bash tests/perf_smoke.sh
+PERF_MAX_STATUS_MS=0 PERF_MAX_PICKER_MS=0 bash tests/perf_smoke.sh
+```
+
 The tests use a local fake `tmux` binary, so they do not require a running tmux
-server or external test framework.
+server or external test framework. CI also runs `shellcheck` over the plugin
+scripts and entrypoints.
 
 

@@ -146,6 +146,6 @@ window_q=$(printf '%q' "$window")
 tmux display-popup -B -w "$w" -h "$h" -E "$self_q --select $tmp_q $path_q $window_q"
 
 agent=''
-[ -s "$tmp" ] && agent="$(cat "$tmp")"
+[ -s "$tmp" ] && agent="$(<"$tmp")"
 [ -n "$agent" ] || exit 0
 exec "$DIR/launch.sh" "$path" "$window" "$agent"

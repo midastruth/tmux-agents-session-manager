@@ -66,7 +66,7 @@ emit_managed_rows() {
 }
 
 emit_manual_rows() {
-  local now s pane cmd ppid path state at base name rank label desc ago
+  local now s pane cmd ppid path state at opts base name rank label desc ago
   now=$(date +%s)
   tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null |
     while IFS=$'\t' read -r s pane cmd ppid path; do
@@ -80,8 +80,11 @@ emit_manual_rows() {
       name=${path##*/}
       # Per-pane state, written by the extension/state.sh when loaded. Falls back
       # to a plain "manual" marker when no status extension is attached.
-      state="$(tmux show-options -pqv -t "$pane" @agent_state)" || exit $?
-      at="$(tmux show-options -pqv -t "$pane" @agent_state_at)" || exit $?
+      opts="$(tmux show-options -pqv -t "$pane" @agent_state \
+        \; show-options -pqv -t "$pane" @agent_state_at)" || exit $?
+      state=${opts%%$'\n'*}
+      at=${opts#*$'\n'}
+      [ "$at" = "$opts" ] && at=''
       if [ -n "$state" ]; then
         split_classify "$state"
       else
@@ -122,18 +125,58 @@ emit_rows() {
       }'
 }
 
+kill_target() {
+  local kind="$1" target="$2"
+  case "$kind" in
+  session) tmux kill-session -t "$target" 2>/dev/null ;;
+  pane)    tmux send-keys -t "$target" C-c 2>/dev/null ;;
+  esac
+}
+
+open_session_target() {
+  local target="$1" origin parent
+  # Move the underlying parent client to the session's origin window (best-effort),
+  # then resume the session in THIS popup over it. Falls back to resuming over the
+  # current window when origin/parent are unknown.
+  origin=$(tmux show-options -qv -t "$target" @agent_origin 2>/dev/null)
+  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
+  [ -n "$origin" ] && [ -n "$parent" ] &&
+    tmux switch-client -c "$parent" -t "$origin" 2>/dev/null
+
+  # Opening a completed session marks it as seen.
+  mark_managed_session_seen_if_done "$target"
+
+  tmux attach-session -t "$target"
+}
+
+open_pane_target() {
+  local target="$1" parent
+  # Opening a completed manual pane marks it as seen.
+  mark_pane_seen_if_done "$target"
+
+  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
+  if [ -n "$parent" ]; then
+    tmux switch-client -c "$parent" -t "$target" 2>/dev/null || tmux switch-client -t "$target"
+  else
+    tmux switch-client -t "$target"
+  fi
+}
+
+open_target() {
+  local kind="$1" target="$2"
+  case "$kind" in
+  session) open_session_target "$target" ;;
+  pane)    open_pane_target "$target" ;;
+  esac
+}
+
 [ "${1:-}" = '--list' ] && {
   emit_rows
   exit 0
 }
 
 [ "${1:-}" = '--kill' ] && {
-  kind="${2:-}"
-  target="${3:-}"
-  case "$kind" in
-  session) tmux kill-session -t "$target" 2>/dev/null ;;
-  pane)    tmux send-keys -t "$target" C-c 2>/dev/null ;;
-  esac
+  kill_target "${2:-}" "${3:-}"
   exit 0
 }
 
@@ -154,30 +197,4 @@ sel=$(emit_rows | fzf --ansi --delimiter='\t' --with-nth=10 \
 kind=$(printf '%s' "$sel" | cut -f2)
 target=$(printf '%s' "$sel" | cut -f3)
 
-case "$kind" in
-session)
-  # Move the underlying parent client to the session's origin window (best-effort),
-  # then resume the session in THIS popup over it. Falls back to resuming over the
-  # current window when origin/parent are unknown.
-  origin=$(tmux show-options -qv -t "$target" @agent_origin 2>/dev/null)
-  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
-  [ -n "$origin" ] && [ -n "$parent" ] &&
-    tmux switch-client -c "$parent" -t "$origin" 2>/dev/null
-
-  # Opening a completed session marks it as seen.
-  mark_managed_session_seen_if_done "$target"
-
-  tmux attach-session -t "$target"
-  ;;
-pane)
-  # Opening a completed manual pane marks it as seen.
-  mark_pane_seen_if_done "$target"
-
-  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
-  if [ -n "$parent" ]; then
-    tmux switch-client -c "$parent" -t "$target" 2>/dev/null || tmux switch-client -t "$target"
-  else
-    tmux switch-client -t "$target"
-  fi
-  ;;
-esac
+open_target "$kind" "$target"

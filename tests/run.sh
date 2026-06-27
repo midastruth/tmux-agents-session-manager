@@ -144,6 +144,41 @@ esac
 TMUX_MOCK
 chmod +x "$MOCK_BIN/tmux"
 
+cat >"$MOCK_BIN/ps" <<'PS_MOCK'
+#!/usr/bin/env bash
+set -u
+
+kv_get() {
+  local data="$1" key="$2" line k v
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    k="${line%%=*}"
+    v="${line#*=}"
+    if [ "$k" = "$key" ]; then
+      printf '%s' "$v"
+      return 0
+    fi
+  done <<< "$data"
+  return 1
+}
+
+if [ "${1:-}" = '-o' ] && [ "${2:-}" = 'pid=' ] && [ "${3:-}" = '--ppid' ]; then
+  children="$(kv_get "${TMUX_MOCK_PS_CHILDREN:-}" "${4:-}" || true)"
+  for child in $children; do
+    printf '%s\n' "$child"
+  done
+  exit 0
+fi
+
+if [ "${1:-}" = '-o' ] && [ "${2:-}" = 'comm=' ] && [ "${3:-}" = '-p' ]; then
+  kv_get "${TMUX_MOCK_PS_COMM:-}" "${4:-}" || true
+  exit 0
+fi
+
+exit 0
+PS_MOCK
+chmod +x "$MOCK_BIN/ps"
+
 export PATH="$MOCK_BIN:$PATH"
 export TMUX_MOCK_LOG="$TMUX_LOG"
 
@@ -155,6 +190,7 @@ reset_mocks() {
   unset TMUX_MOCK_OPTIONS TMUX_MOCK_TARGET_OPTIONS TMUX_MOCK_STATUS_OPTIONS \
     TMUX_MOCK_LIST_SESSIONS TMUX_MOCK_LIST_PANES TMUX_MOCK_LIST_CLIENTS \
     TMUX_MOCK_HAS_SESSION TMUX_MOCK_CURRENT_SESSION TMUX_MOCK_PANE_SESSION \
+    TMUX_MOCK_PS_CHILDREN TMUX_MOCK_PS_COMM \
     AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS TMUX_PANE
 }
 
@@ -241,6 +277,8 @@ reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_agents=foo=foo --bar\\nbar=bar --baz'
 out="$(run_bash '. scripts/helpers.sh; agent_command bar "pi"')"
 assert_eq 'agent_command reads configured registry' 'bar --baz' "$out"
+run_bash '. scripts/helpers.sh; agent_command nope "pi"' >/dev/null
+assert_eq 'agent_command fails for unknown agent' '1' "$?"
 out="$(run_bash '. scripts/helpers.sh; agent_names "pi"')"
 assert_eq 'agent_names reads configured registry' $'foo\nbar' "$out"
 
@@ -251,6 +289,14 @@ assert_eq 'session_hash is stable and 8 chars' '6533d8b9' "$out"
 reset_mocks
 out="$(run_bash 'AGENT_DETECT_COMMANDS="pi codex"; . scripts/helpers.sh; resolve_pane_agent codex 123')"
 assert_eq 'resolve_pane_agent returns direct detected command' 'codex' "$out"
+
+reset_mocks
+AGENT_DETECT_COMMANDS='pi codex'
+AGENT_DETECT_WRAPPERS='node'
+TMUX_MOCK_PS_CHILDREN=$'123=456\n456=789'
+TMUX_MOCK_PS_COMM=$'456=bash\n789=codex'
+out="$(run_bash '. scripts/helpers.sh; resolve_pane_agent node 123')"
+assert_eq 'resolve_pane_agent finds child agent for configured wrapper' 'codex' "$out"
 
 reset_mocks
 TMUX_MOCK_TARGET_OPTIONS=$'%7|@agent_state=done'
@@ -300,6 +346,20 @@ out="$(run_bash 'scripts/picker.sh --list')"
 assert_contains 'picker --list emits managed session row identity' "$out" $'session\tagent-pi\t🔴 blocked\tproj\t0m'
 assert_contains 'picker --list shortens home path and describes state' "$out" $'~/proj\tneeds input\tpi'
 assert_not_contains 'picker --list ignores unmanaged sessions' "$out" $'session\tother'
+
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+TMUX_MOCK_LIST_PANES=$'work\t%1\tpi\t123\t/tmp/manual-proj'
+out="$(run_bash 'scripts/picker.sh --list')"
+assert_contains 'picker --list emits manual pane row' "$out" $'pane\t%1\t🟣 manual \tmanual-proj'
+assert_contains 'picker --list describes manual pane agent' "$out" $'/tmp/manual-proj\tpane running pi\tpi'
+
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+TMUX_MOCK_LIST_PANES=$'work\t%1\tpi\t123\t/tmp/manual-proj'
+TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=done"$'\n'"%1|@agent_state_at=$picker_now"
+out="$(run_bash 'scripts/picker.sh --list')"
+assert_contains 'picker --list reads manual pane state and timestamp' "$out" $'pane\t%1\t🔵 done   \tmanual-proj\t0m'
 
 # state.sh
 reset_mocks

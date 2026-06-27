@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shell-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Shellcheck
+        run: shellcheck -x -P scripts scripts/*.sh *.tmux
+
+      - name: Unit tests
+        run: bash tests/run.sh
+
+      - name: Smoke performance tests
+        env:
+          PERF_MAX_STATUS_MS: 4000
+          PERF_MAX_PICKER_MS: 10000
+        run: bash tests/perf_smoke.sh
