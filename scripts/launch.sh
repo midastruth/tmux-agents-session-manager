@@ -53,9 +53,6 @@ fi
 [ -n "$window" ] && tmux set-option -t "$session" @agent_origin "$window"
 
 # Opening a completed session marks it as seen.
-if [ "$(tmux show-options -qv -t "$session" @agent_state 2>/dev/null)" = done ]; then
-  tmux set-option -t "$session" @agent_state idle
-  tmux set-option -t "$session" @agent_state_at "$(date +%s)"
-fi
+mark_managed_session_seen_if_done "$session"
 
 tmux display-popup -w "$w" -h "$h" -E "tmux attach-session -t $session"

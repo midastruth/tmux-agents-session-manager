@@ -27,6 +27,54 @@ is_managed_session() {
   [[ "$session" == "$prefix"* ]]
 }
 
+# mark_managed_session_seen_if_done <session>
+# Opening a managed session that has reported session-scoped "done" marks that
+# finished turn as seen. Pi/state.sh write both session-scoped and pane-scoped
+# @agent_state; tmux formats such as #{@agent_state} may prefer a pane option, so
+# also clear pane-scoped "done" values. A pane-scoped stale "done" must not reset
+# an authoritative session-level "working"/"blocked" state.
+mark_managed_session_seen_if_done() {
+  local session="$1" session_state pane pane_state now
+  local -a args
+
+  session_state="$(tmux show-options -qv -t "$session" @agent_state 2>/dev/null || true)"
+  now="$(date +%s)"
+  args=()
+
+  if [ "$session_state" = done ]; then
+    args+=(
+      set-option -t "$session" @agent_state idle
+      \; set-option -t "$session" @agent_state_at "$now"
+    )
+  fi
+
+  while IFS= read -r pane; do
+    [ -n "$pane" ] || continue
+    pane_state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+    [ "$pane_state" = done ] || continue
+    if [ "${#args[@]}" -gt 0 ]; then
+      args+=(\;)
+    fi
+    args+=(
+      set-option -pu -t "$pane" @agent_state
+      \; set-option -pu -t "$pane" @agent_state_at
+    )
+  done < <(tmux list-panes -t "$session" -F '#{pane_id}' 2>/dev/null)
+
+  [ "${#args[@]}" -gt 0 ] || return 0
+  tmux "${args[@]}" 2>/dev/null || true
+}
+
+# mark_pane_seen_if_done <pane>
+mark_pane_seen_if_done() {
+  local pane="$1" state now
+  state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+  [ "$state" = done ] || return 0
+  now="$(date +%s)"
+  tmux set-option -p -t "$pane" @agent_state idle \
+    \; set-option -p -t "$pane" @agent_state_at "$now" 2>/dev/null || true
+}
+
 # detect_commands
 # Space-separated list of agent commands the picker/status line auto-detect when
 # they are running directly in a tmux pane (manual, non-managed sessions).

@@ -161,19 +161,13 @@ session)
     tmux switch-client -c "$parent" -t "$origin" 2>/dev/null
 
   # Opening a completed session marks it as seen.
-  if [ "$(tmux show-options -qv -t "$target" @agent_state 2>/dev/null)" = done ]; then
-    tmux set-option -t "$target" @agent_state idle
-    tmux set-option -t "$target" @agent_state_at "$(date +%s)"
-  fi
+  mark_managed_session_seen_if_done "$target"
 
   tmux attach-session -t "$target"
   ;;
 pane)
   # Opening a completed manual pane marks it as seen.
-  if [ "$(tmux show-options -pqv -t "$target" @agent_state 2>/dev/null)" = done ]; then
-    tmux set-option -p -t "$target" @agent_state idle
-    tmux set-option -p -t "$target" @agent_state_at "$(date +%s)"
-  fi
+  mark_pane_seen_if_done "$target"
 
   parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
   if [ -n "$parent" ]; then
