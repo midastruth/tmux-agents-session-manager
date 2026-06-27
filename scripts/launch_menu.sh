@@ -4,6 +4,21 @@
 # it skips the menu and launches directly, preserving the original prefix+y behaviour.
 # Args: [--select <output-file>] <dir> [origin-window-id]
 #   <dir> / [origin-window-id] are expanded by run-shell in the binding.
+
+# macOS still ships bash 3.2 as /bin/bash, which lacks features this menu relies
+# on (notably `read -t` with fractional seconds for arrow keys). If we're running
+# under an old bash, re-exec with a newer one from PATH (e.g. Homebrew bash).
+if [ -z "${AGENT_MENU_REEXEC:-}" ] && [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  for _bash in /opt/homebrew/bin/bash /usr/local/bin/bash bash; do
+    _bin="$(command -v "$_bash" 2>/dev/null)" || continue
+    _ver="$("$_bin" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)"
+    if [ "${_ver:-0}" -ge 4 ] 2>/dev/null; then
+      export AGENT_MENU_REEXEC=1
+      exec "$_bin" "${BASH_SOURCE[0]}" "$@"
+    fi
+  done
+fi
+
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
@@ -20,8 +35,12 @@ path="${1:-$PWD}"
 window="${2:-}"
 default_cmd="pi -e '$ROOT/extensions/tmux-state.ts'"
 
-# Collect configured agent names.
-mapfile -t names < <(agent_names "$default_cmd")
+# Collect configured agent names. Avoid bash 4's `mapfile` so this keeps working
+# on macOS's default /bin/bash 3.2.
+names=()
+while IFS= read -r _name; do
+  [ -n "$_name" ] && names+=("$_name")
+done < <(agent_names "$default_cmd")
 
 show_menu="$(get_tmux_option @agent_launch_menu 'on')"
 
@@ -89,7 +108,7 @@ select_agent() {
 
   while :; do
     render_menu "$selected"
-    IFS= read -rsN1 key || exit 0
+    IFS= read -rsn1 key || exit 0
     case "$key" in
     $'\x0e') selected=$(((selected + 1) % count)) ;;         # Ctrl+n
     $'\x10') selected=$(((selected + count - 1) % count)) ;; # Ctrl+p
@@ -98,7 +117,7 @@ select_agent() {
     $'\x1b')
       # Support arrows as the native tmux menu does; a bare Esc cancels.
       rest=''
-      IFS= read -rsN2 -t 0.03 rest || true
+      IFS= read -rsn2 -t 0.03 rest || true
       case "$rest" in
       '[B') selected=$(((selected + 1) % count)) ;;         # Down
       '[A') selected=$(((selected + count - 1) % count)) ;; # Up
