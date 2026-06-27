@@ -112,7 +112,9 @@ select_agent() {
     case "$key" in
     $'\x0e') selected=$(((selected + 1) % count)) ;;         # Ctrl+n
     $'\x10') selected=$(((selected + count - 1) % count)) ;; # Ctrl+p
-    $'\r'|$'\n') printf '%s' "${names[$selected]}" >"$select_out"; exit 0 ;;
+    ''|$'\r'|$'\n') # Empty: terminal ICRNL turned Enter's \r into \n, read's
+                    # delimiter, so read returns success with an empty key.
+      printf '%s' "${names[$selected]}" >"$select_out"; exit 0 ;;
     q|Q) exit 0 ;;
     $'\x1b')
       # Support arrows as the native tmux menu does; a bare Esc cancels.
