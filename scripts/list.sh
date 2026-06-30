@@ -10,6 +10,11 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_SESSION_PREFIX="$(agent_session_prefix)"
 export AGENT_SESSION_PREFIX
 
+# The client that invoked the binding (#{client_name}). Prefer hosting the
+# popup here so it always opens on the terminal the user pressed the key in,
+# even when several clients are attached to the same session.
+invoking_client="${1:-}"
+
 w="$(get_tmux_option @agent_popup_width '90%')"
 h="$(get_tmux_option @agent_popup_height '90%')"
 
@@ -44,7 +49,22 @@ if [ -n "$sess" ]; then
   done
 fi
 
-host="$(host_client)"
+# Prefer the invoking client when it isn't itself a managed (popup) session.
+# Resolve its session from list-clients output rather than display-message -c/-t:
+# while a popup is open those targets resolve to the popup client, not the one
+# that pressed the key.
+host=''
+if [ -n "$invoking_client" ]; then
+  inv_session="$(tmux list-clients -F '#{client_name} #{session_name}' 2>/dev/null |
+    while read -r client session; do
+      [ "$client" = "$invoking_client" ] && { printf '%s\n' "$session"; break; }
+    done)"
+  if [ -n "$inv_session" ] && ! is_managed_session "$inv_session"; then
+    host="$invoking_client"
+  fi
+fi
+# Fall back to scanning for any non-managed client.
+[ -n "$host" ] || host="$(host_client)"
 tmux set-option -gq @agent_parent "$host"
 
 # Host the picker on the outer client. -c is honored because that client has no
