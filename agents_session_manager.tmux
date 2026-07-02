@@ -36,7 +36,7 @@ tmux bind-key "$list_key" \
 # controls how often tmux re-runs the summary; status-interval also bounds it.
 status_enabled="$(get_tmux_option @agent_status 'off')"
 if [ "$status_enabled" = on ]; then
-  status_interval="$(get_tmux_option @agent_status_interval '5')"
+  status_interval="$(get_tmux_option @agent_status_interval '1')"
   summary="#($CURRENT_DIR/scripts/status.sh)"
   current_right="$(tmux show-option -gqv status-right)"
   # Avoid appending twice on plugin reload.

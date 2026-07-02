@@ -222,9 +222,23 @@ picker_now="$(date +%s)"
 TMUX_MOCK_LIST_SESSIONS="agent-pi	blocked	${picker_now}	${picker_home}/proj	pi	pi
 other	done	${picker_now}	/tmp/x		bash"
 out="$(run_bash 'scripts/picker.sh --list')"
-assert_contains 'picker --list emits managed session row identity' "$out" $'session\tagent-pi\t🔴 blocked\tproj\t0m'
+assert_contains 'picker --list emits managed session row identity' "$out" $'session\tagent-pi\t🔴 blocked\tproj\t0s'
 assert_contains 'picker --list shortens home path and describes state' "$out" $'~/proj\tneeds input\tpi'
 assert_not_contains 'picker --list ignores unmanaged sessions' "$out" $'session\tother'
+
+# picker.sh age column scales seconds/minutes/hours/days.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+now_ts="$(date +%s)"
+TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$((now_ts - 45))	/tmp/a	pi	pi
+agent-b	blocked	$((now_ts - 720))	/tmp/b	pi	pi
+agent-c	blocked	$((now_ts - 10800))	/tmp/c	pi	pi
+agent-d	blocked	$((now_ts - 172800))	/tmp/d	pi	pi"
+out="$(run_bash 'scripts/picker.sh --list')"
+assert_contains 'picker --list age shows seconds' "$out" $'session\tagent-a\t🔴 blocked\ta\t45s'
+assert_contains 'picker --list age shows minutes' "$out" $'session\tagent-b\t🔴 blocked\tb\t12m'
+assert_contains 'picker --list age shows hours' "$out" $'session\tagent-c\t🔴 blocked\tc\t3h'
+assert_contains 'picker --list age shows days' "$out" $'session\tagent-d\t🔴 blocked\td\t2d'
 
 reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
@@ -238,7 +252,7 @@ TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
 TMUX_MOCK_LIST_PANES=$'work\t%1\tpi\t123\t/tmp/manual-proj'
 TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=done"$'\n'"%1|@agent_state_at=$picker_now"
 out="$(run_bash 'scripts/picker.sh --list')"
-assert_contains 'picker --list reads manual pane state and timestamp' "$out" $'pane\t%1\t🔵 done   \tmanual-proj\t0m'
+assert_contains 'picker --list reads manual pane state and timestamp' "$out" $'pane\t%1\t🔵 done   \tmanual-proj\t0s'
 
 # state.sh
 reset_mocks

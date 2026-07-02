@@ -38,6 +38,24 @@ classify() {
   esac
 }
 
+# humanize_ago <epoch-seconds> <now> -> compact age like 45s / 12m / 3h / 2d.
+# Falls back to '-' when the timestamp is missing or non-numeric.
+humanize_ago() {
+  local at="$1" now="$2" delta
+  [[ "$at" =~ ^[0-9]+$ ]] || { printf '%s' '-'; return; }
+  delta=$((now - at))
+  [ "$delta" -lt 0 ] && delta=0
+  if [ "$delta" -lt 60 ]; then
+    printf '%ds' "$delta"
+  elif [ "$delta" -lt 3600 ]; then
+    printf '%dm' "$((delta / 60))"
+  elif [ "$delta" -lt 86400 ]; then
+    printf '%dh' "$((delta / 3600))"
+  else
+    printf '%dd' "$((delta / 86400))"
+  fi
+}
+
 # split_classify <state> -> sets $rank $label $desc from classify output.
 split_classify() {
   local info rest
@@ -58,7 +76,7 @@ emit_managed_rows() {
       # The agent recorded at launch, falling back to whatever runs in the pane.
       [ -n "$tool" ] || tool=${cmd##*/}
       split_classify "$state"
-      if [[ "$at" =~ ^[0-9]+$ ]]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
+      ago="$(humanize_ago "$at" "$now")"
       # rank \t kind \t target \t label \t name \t age \t path \t desc \t tool
       printf '%s\tsession\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$rank" "$s" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$tool"
@@ -113,7 +131,7 @@ emit_manual_rows() {
     else
       rank=2; label='🟣 manual '; desc="pane running $base"
     fi
-    if [[ "$at" =~ ^[0-9]+$ ]]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
+    ago="$(humanize_ago "$at" "$now")"
     printf '%s\tpane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$rank" "$pane" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$base"
   done <<< "$panes"
