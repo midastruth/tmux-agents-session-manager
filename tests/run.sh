@@ -506,6 +506,43 @@ run_bash 'scripts/state.sh done' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'state.sh keeps done on watched manual pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
 
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh keeps done on unwatched managed pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
+assert_contains 'state.sh writes session done on unwatched managed pane' "$log_contents" $'set-option\t-t\tagent-a\t@agent_state\tdone'
+
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+TMUX_MOCK_PANE_VISIBLE='1 0 1'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh keeps done when managed window is inactive' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
+
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+TMUX_MOCK_PANE_VISIBLE='1 1 0'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh keeps done when managed pane is inactive' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
+
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+TMUX_MOCK_PANE_VISIBLE='1 1 1'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE
+run_bash 'scripts/state.sh working' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh does not downgrade working on watched managed pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tworking'
+assert_not_contains 'state.sh does not turn working into idle when watched' "$log_contents" $'@agent_state\tidle'
+
 # launch.sh
 reset_mocks
 TMUX_MOCK_CURRENT_SESSION='work'

@@ -46,10 +46,11 @@ EOF
 
 # is_watched_managed_pane <pane>
 # Succeeds when <pane> belongs to a managed agent session that a client is
-# currently watching. Mirrors the bundled Pi extension's isWatchedManagedPane:
-# managed sessions live inside the plugin popup, so closing the popup detaches
-# the client, which makes session_attached a reliable "being watched" signal.
-# Used to skip a stale "done" badge when the user watched the turn finish.
+# currently watching. Mirrors isWatchedManagedPane() in
+# extensions/tmux-state.ts: managed sessions live inside the plugin popup, so
+# closing the popup detaches the client, which makes session_attached a reliable
+# "being watched" signal. Used to skip a stale "done" badge when the user
+# watched the turn finish. Keep the two implementations in sync.
 is_watched_managed_pane() {
   local pane="$1" session
   [ -n "$pane" ] || return 1

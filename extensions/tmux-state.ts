@@ -51,6 +51,11 @@ function managedSessionPrefix(): string {
 // watching the session finish in real time — there is nothing to "see" later,
 // so it should read "idle" immediately instead of getting stuck on "done"
 // until the session is closed and reopened via the picker/launcher.
+//
+// NOTE: scripts/helpers.sh mirrors this in Bash as is_watched_managed_pane()
+// (with is_pane_visible()), used by scripts/state.sh so agents wired through
+// hooks (e.g. Codex's Stop hook) get the same "skip done when watched" shortcut.
+// Keep the two implementations in sync when changing this logic.
 function isWatchedManagedPane(): boolean {
   const session = currentTmuxSession();
   if (!session || !session.startsWith(managedSessionPrefix())) return false;
