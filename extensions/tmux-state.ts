@@ -2,7 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 
 const VALID_STATES = new Set(["blocked", "working", "done", "idle"]);
+const DEFAULT_SESSION_PREFIX = "agent-";
 let tmuxSession: string | undefined;
+let sessionPrefix: string | undefined;
 
 function runTmux(args: string[]): string | undefined {
   try {
@@ -23,13 +25,38 @@ function currentTmuxSession(): string | undefined {
   return tmuxSession;
 }
 
-// isPaneVisible reports whether TMUX_PANE is the pane a client is currently
-// looking at: the session has an attached client, and this pane's window is
-// the active window of that session, and this pane is the active pane in it.
+function managedSessionPrefix(): string {
+  if (sessionPrefix === undefined) {
+    sessionPrefix =
+      runTmux(["show-option", "-gqv", "@agent_session_prefix"]) ||
+      DEFAULT_SESSION_PREFIX;
+  }
+  return sessionPrefix;
+}
+
+// isWatchedManagedPane reports whether TMUX_PANE belongs to a managed agent
+// session (session name carries the configured prefix) that a client is
+// currently looking at: the session has an attached client, this pane's window
+// is the active window, and this pane is the active pane in it.
+//
+// tmux can only detect client attachment, not terminal focus, so the check is
+// deliberately restricted to managed sessions: those live inside the plugin's
+// popup, and closing the popup detaches the client, which makes
+// session_attached a reliable "being watched" signal there. For manual panes
+// in an always-attached outer session the same signal would be meaningless
+// (terminal minimized, popup covering the pane, forgotten second client), so
+// they never take this shortcut.
+//
 // Used to avoid flashing "done" (finished, unseen) when the user is already
 // watching the session finish in real time — there is nothing to "see" later,
 // so it should read "idle" immediately instead of getting stuck on "done"
 // until the session is closed and reopened via the picker/launcher.
+function isWatchedManagedPane(): boolean {
+  const session = currentTmuxSession();
+  if (!session || !session.startsWith(managedSessionPrefix())) return false;
+  return isPaneVisible();
+}
+
 function isPaneVisible(): boolean {
   const pane = process.env.TMUX_PANE;
   if (!pane) return false;
@@ -83,10 +110,12 @@ export default function piTmuxStateExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async () => {
-    // If the user is actively looking at this pane right now, there is
-    // nothing left to "discover" later — go straight to idle instead of
-    // done, so the badge does not get stuck showing done while attached.
-    setState(isPaneVisible() ? "idle" : "done");
+    // If the user is actively watching this managed session's pane right now,
+    // there is nothing left to "discover" later — go straight to idle instead
+    // of done, so the badge does not get stuck showing done while attached.
+    // Manual panes always report done (attachment is not a reliable
+    // "watching" signal outside the managed popup flow).
+    setState(isWatchedManagedPane() ? "idle" : "done");
   });
 
   pi.on("session_shutdown", async () => {

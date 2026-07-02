@@ -131,10 +131,15 @@ The extension writes these tmux options on the nested Pi session:
 | `agent_end`        | `done`\*   | The turn finished and has not been opened yet |
 | `session_shutdown` | `idle`     | Pi is shutting down  |
 
-\* If the pane is the one currently attached and focused (i.e. you are
-watching it finish), `agent_end` reports `idle` directly instead of `done` —
-there is nothing left to "discover" later, so the badge does not get stuck
-showing `done` until you leave and reopen the session.
+\* For **managed sessions only** (session name carries the
+`@agent_session_prefix`): if the session has an attached client and the pane
+is the active pane of the active window when the turn ends, `agent_end`
+reports `idle` directly instead of `done` — you were already watching it
+finish in the popup, so there is nothing left to "discover" later and the
+badge does not get stuck showing `done`. tmux can only detect client
+attachment (not terminal focus), which is a reliable signal inside the
+managed popup flow because closing the popup detaches its client. Manual
+panes in an always-attached outer session always report `done`.
 
 Opening a `done` session from the picker or launcher marks it `idle` again.
 
@@ -159,6 +164,13 @@ line read.
 Wire these into whatever hooks your agent provides (e.g. a pre/post-prompt hook,
 or a wrapper script) to get the same `working` / `done` badges that pi gets from
 its bundled extension.
+
+Note one asymmetry: `state.sh done` always records `done`, even when the
+session is attached and visible. Only the bundled Pi extension applies the
+"skip `done` when the managed session is being watched" shortcut described in
+the footnote above, so other agents (e.g. Codex via `codex_notify.sh`) briefly
+show `done` even if you watched the turn finish; opening the session from the
+picker or launcher clears it back to `idle`.
 
 ## Status line summary
 
