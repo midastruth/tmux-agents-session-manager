@@ -128,8 +128,13 @@ The extension writes these tmux options on the nested Pi session:
 | ------------------ | ---------- | -------------------- |
 | `session_start`    | `idle`     | Pi is open           |
 | `agent_start`      | `working`  | Pi is processing     |
-| `agent_end`        | `done`     | The turn finished and has not been opened yet |
+| `agent_end`        | `done`\*   | The turn finished and has not been opened yet |
 | `session_shutdown` | `idle`     | Pi is shutting down  |
+
+\* If the pane is the one currently attached and focused (i.e. you are
+watching it finish), `agent_end` reports `idle` directly instead of `done` —
+there is nothing left to "discover" later, so the badge does not get stuck
+showing `done` until you leave and reopen the session.
 
 Opening a `done` session from the picker or launcher marks it `idle` again.
 
