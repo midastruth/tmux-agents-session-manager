@@ -165,10 +165,35 @@ Wire these into whatever hooks your agent provides (e.g. a pre/post-prompt hook,
 or a wrapper script) to get the same `working` / `done` badges that pi gets from
 its bundled extension.
 
+Codex reports full state through its `[hooks]` config. Add to `~/.codex/config.toml`:
+
+```toml
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/path/to/tmux-agents-session-manager/scripts/state.sh idle"
+timeout = 1
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "/path/to/tmux-agents-session-manager/scripts/state.sh working"
+timeout = 1
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/path/to/tmux-agents-session-manager/scripts/state.sh done"
+timeout = 1
+```
+
+This gives Codex the animated `working` badge on turn start (the old `notify`
+hook could only report `done`).
+
 Note one asymmetry: `state.sh done` always records `done`, even when the
 session is attached and visible. Only the bundled Pi extension applies the
 "skip `done` when the managed session is being watched" shortcut described in
-the footnote above, so other agents (e.g. Codex via `codex_notify.sh`) briefly
+the footnote above, so other agents (e.g. Codex via the `Stop` hook) briefly
 show `done` even if you watched the turn finish; opening the session from the
 picker or launcher clears it back to `idle`.
 
