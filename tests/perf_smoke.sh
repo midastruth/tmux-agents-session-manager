@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
-# Smoke performance checks for hot paths. Uses a tmux mock, so results are
-# stable enough to catch large regressions without requiring a live tmux server.
+# Smoke performance checks for hot paths. Uses the shared tmux mock, so results
+# are stable enough to catch large regressions without a live tmux server.
 # Run with: bash tests/perf_smoke.sh
-set -euo pipefail
+#
+# Tunables (environment):
+#   PERF_ITERATIONS      measured runs per case (default 7)
+#   PERF_WARMUP          discarded warm-up runs per case (default 2)
+#   PERF_MAX_STATUS_MS   absolute median threshold for status.sh (0 disables)
+#   PERF_MAX_PICKER_MS   absolute median threshold for picker.sh (0 disables)
+#   PERF_MAX_GROWTH      max allowed median growth when n doubles 50->100
+#                        (default 3.5; linear ~2x, quadratic ~4x; 0 disables)
+#
+# Medians (not means) are compared against thresholds so a single slow run on a
+# noisy CI machine does not fail the build. The growth check is machine-speed
+# independent and exists to catch algorithmic (per-item cost) regressions.
+set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}/tmux-agents-perf.$$"
@@ -14,136 +26,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$MOCK_BIN/tmux" <<'TMUX_MOCK'
-#!/usr/bin/env bash
-set -u
-
-kv_get() {
-  local data="$1" key="$2" line k v
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    k="${line%%=*}"
-    v="${line#*=}"
-    if [ "$k" = "$key" ]; then
-      printf '%s' "$v"
-      return 0
-    fi
-  done <<< "$data"
-  return 1
-}
-
-last_arg() {
-  local x last=''
-  for x in "$@"; do last="$x"; done
-  printf '%s' "$last"
-}
-
-target_arg() {
-  local prev='' x
-  for x in "$@"; do
-    if [ "$prev" = '-t' ]; then
-      printf '%s' "$x"
-      return 0
-    fi
-    prev="$x"
-  done
-  return 1
-}
-
-show_option() {
-  local opt target value x value_only=no
-  opt="$(last_arg "$@")"
-  target="$(target_arg "$@" || true)"
-  for x in "$@"; do
-    case "$x" in
-    -*v*) value_only=yes ;;
-    esac
-  done
-  if [ -n "$target" ] && [[ "$opt" != @* ]]; then
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      k="${line%%=*}"
-      value="${line#*=}"
-      case "$k" in
-      "$target|"@*) printf '%s %s\n' "${k#"$target|"}" "$value" ;;
-      esac
-    done <<< "${TMUX_MOCK_TARGET_OPTIONS:-}"
-    return 0
-  fi
-  if [ -n "$target" ]; then
-    value="$(kv_get "${TMUX_MOCK_TARGET_OPTIONS:-}" "$target|$opt" || true)"
-  else
-    value="$(kv_get "${TMUX_MOCK_OPTIONS:-}" "$opt" || true)"
-  fi
-  [ -n "$value" ] || return 0
-  if [ "$value_only" = yes ]; then
-    printf '%s' "$value"
-  else
-    printf '%s %s' "$opt" "$value"
-  fi
-}
-
-run_group() {
-  local group_cmd="$1" joined
-  shift || true
-  case "$group_cmd" in
-    show-option|show-options)
-      show_option "$@"
-      ;;
-    display-message)
-      joined=" $* "
-      if [[ "$joined" == *' -F '* ]]; then
-        printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
-      else
-        last_arg "$@"
-      fi
-      ;;
-  esac
-}
-
-run_chain() {
-  local -a group=()
-  local arg first=yes
-  for arg in "$@"; do
-    if [ "$arg" = ';' ]; then
-      if [ "${#group[@]}" -gt 0 ]; then
-        [ "$first" = no ] && printf '\n'
-        run_group "${group[@]}"
-        first=no
-      fi
-      group=()
-    else
-      group+=("$arg")
-    fi
-  done
-  if [ "${#group[@]}" -gt 0 ]; then
-    [ "$first" = no ] && printf '\n'
-    run_group "${group[@]}"
-  fi
-}
-
-cmd="${1:-}"
-shift || true
-case "$cmd" in
-  display-message|show-option|show-options)
-    run_chain "$cmd" "$@"
-    ;;
-  list-sessions)
-    [ -n "${TMUX_MOCK_LIST_SESSIONS:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_SESSIONS"
-    ;;
-  list-panes)
-    joined=" $* "
-    if [[ "$joined" == *pane_current_command* ]]; then
-      [ -n "${TMUX_MOCK_LIST_PANES_PICKER:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_PANES_PICKER"
-    else
-      [ -n "${TMUX_MOCK_LIST_PANES_STATUS:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_PANES_STATUS"
-    fi
-    ;;
-  *)
-    ;;
-esac
-TMUX_MOCK
-chmod +x "$MOCK_BIN/tmux"
+# shellcheck source=lib/tmux_mock.sh
+. "$ROOT/tests/lib/tmux_mock.sh"
+install_tmux_mock "$MOCK_BIN"
 
 export PATH="$MOCK_BIN:$PATH"
 export AGENT_SESSION_PREFIX='agent-'
@@ -155,37 +40,74 @@ status_options() {
   printf '%s' "agent-${us}✦${us}✓${us}●${us}·${us}agents${us}off${us}✦ ✶ ✷ ✶${us}yellow${us}cyan${us}red${us}green${us}off${us}off${us}21600"
 }
 
+# --- timing -------------------------------------------------------------
+# Prefer $EPOCHREALTIME (bash >= 5, no subprocess, microsecond precision),
+# then date +%s%N, then python3. Refuse to run with second-only precision:
+# averaged sub-second measurements would be meaningless.
 now_ns() {
-  local ns
+  local t ns
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    t="${EPOCHREALTIME//[.,]/}" # sec.usec -> usec
+    printf '%s000' "$t"
+    return 0
+  fi
   ns="$(date +%s%N 2>/dev/null || true)"
   if [[ "$ns" =~ ^[0-9]+$ ]]; then
     printf '%s' "$ns"
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY'
-import time
-print(time.time_ns())
-PY
-  else
-    printf '%s000000000' "$(date +%s)"
+    return 0
   fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import time; print(time.time_ns())'
+    return 0
+  fi
+  return 1
 }
+
+if ! now_ns >/dev/null; then
+  printf 'SKIP - no sub-second clock available (bash5/date +%%N/python3)\n' >&2
+  exit 0
+fi
 
 ms_from_ns() {
   awk -v ns="$1" 'BEGIN { printf "%.1f", ns / 1000000 }'
 }
 
+FAILURES=0
+
+fail() {
+  FAILURES=$((FAILURES + 1))
+  printf 'not ok - %s\n' "$1" >&2
+}
+
+# measure <label> <command> -> sets PERF_MEDIAN_MS; prints a summary line.
+# Runs PERF_WARMUP discarded warm-up iterations (page cache, bash parse) then
+# PERF_ITERATIONS measured ones, reporting min/median/max.
 measure() {
-  local label="$1" iterations="$2" cmd="$3" start end elapsed avg
-  start="$(now_ns)"
-  for _ in $(seq 1 "$iterations"); do
+  local label="$1" cmd="$2" i start end
+  local -a samples=()
+
+  for ((i = 0; i < warmup; i++)); do
     (cd "$ROOT" && bash -c "$cmd") >/dev/null
   done
-  end="$(now_ns)"
-  elapsed=$((end - start))
-  avg=$((elapsed / iterations))
-  printf '%-24s %4s runs  total=%8sms  avg=%7sms\n' \
-    "$label" "$iterations" "$(ms_from_ns "$elapsed")" "$(ms_from_ns "$avg")"
-  PERF_LAST_AVG_MS="$(ms_from_ns "$avg")"
+
+  for ((i = 0; i < iterations; i++)); do
+    start="$(now_ns)"
+    (cd "$ROOT" && bash -c "$cmd") >/dev/null
+    end="$(now_ns)"
+    samples+=($((end - start)))
+  done
+
+  local -a sorted=()
+  while IFS= read -r line; do sorted+=("$line"); done \
+    < <(printf '%s\n' "${samples[@]}" | sort -n)
+  local median_ns="${sorted[$((iterations / 2))]}"
+  local min_ns="${sorted[0]}"
+  local max_ns="${sorted[$((iterations - 1))]}"
+
+  PERF_MEDIAN_MS="$(ms_from_ns "$median_ns")"
+  printf '%-24s %2s+%s runs  min=%8sms  median=%8sms  max=%8sms\n' \
+    "$label" "$warmup" "$iterations" \
+    "$(ms_from_ns "$min_ns")" "$PERF_MEDIAN_MS" "$(ms_from_ns "$max_ns")"
 }
 
 build_case() {
@@ -215,7 +137,8 @@ build_case() {
     opts+="$pane|@agent_state_at=$now"$'\n'
   done
 
-  export TMUX_MOCK_STATUS_OPTIONS="$(status_options)"
+  TMUX_MOCK_STATUS_OPTIONS="$(status_options)"
+  export TMUX_MOCK_STATUS_OPTIONS
   export TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-\n@agent_detect_commands=pi codex claude\n@agent_detect_wrappers=node bun npx npm pnpm yarn'
   export TMUX_MOCK_LIST_SESSIONS="${sessions%$'\n'}"
   export TMUX_MOCK_LIST_PANES_STATUS="${panes_status%$'\n'}"
@@ -224,29 +147,56 @@ build_case() {
 }
 
 check_threshold() {
-  local label="$1" avg="$2" max="$3"
+  local label="$1" median="$2" max="$3"
   [ "$max" = 0 ] && return 0
-  awk -v avg="$avg" -v max="$max" 'BEGIN { exit !(avg <= max) }' || {
-    printf 'not ok - %s average %sms exceeded threshold %sms\n' "$label" "$avg" "$max" >&2
-    return 1
+  awk -v m="$median" -v max="$max" 'BEGIN { exit !(m <= max) }' ||
+    fail "$label median ${median}ms exceeded threshold ${max}ms"
+}
+
+# check_growth <label> <median at n=50> <median at n=100>
+# Machine-independent scaling check: when the input doubles, the median must
+# not grow by more than PERF_MAX_GROWTH. Linear scaling gives <= ~2x (fixed
+# startup cost pulls it below 2); quadratic gives ~4x.
+check_growth() {
+  local label="$1" small="$2" big="$3"
+  [ "$max_growth" = 0 ] && return 0
+  awk -v s="$small" -v b="$big" -v g="$max_growth" \
+    'BEGIN { exit !(s <= 0 || b <= s * g) }' || {
+    local ratio
+    ratio="$(awk -v s="$small" -v b="$big" 'BEGIN { printf "%.2f", b / s }')"
+    fail "$label grew ${ratio}x from n=50 to n=100 (max ${max_growth}x); possible per-item cost regression"
   }
 }
 
-iterations="${PERF_ITERATIONS:-5}"
+iterations="${PERF_ITERATIONS:-7}"
+warmup="${PERF_WARMUP:-2}"
 max_status_ms="${PERF_MAX_STATUS_MS:-2000}"
 max_picker_ms="${PERF_MAX_PICKER_MS:-5000}"
+max_growth="${PERF_MAX_GROWTH:-3.5}"
 
-printf 'Smoke performance test (mock tmux, %s iterations/case)\n' "$iterations"
-printf 'Thresholds: status<=%sms, picker<=%sms (set to 0 to disable)\n\n' "$max_status_ms" "$max_picker_ms"
+printf 'Smoke performance test (mock tmux, %s warmup + %s measured runs/case)\n' "$warmup" "$iterations"
+printf 'Thresholds: status median<=%sms, picker median<=%sms, 50->100 growth<=%sx (0 disables)\n\n' \
+  "$max_status_ms" "$max_picker_ms" "$max_growth"
+
+declare -A medians=()
 
 for n in 10 50 100; do
   printf 'case: %s managed sessions + %s manual panes\n' "$n" "$n"
   build_case "$n"
-  measure "status.sh n=$n" "$iterations" 'scripts/status.sh'
-  check_threshold "status.sh n=$n" "$PERF_LAST_AVG_MS" "$max_status_ms"
-  measure "picker.sh --list n=$n" "$iterations" 'scripts/picker.sh --list'
-  check_threshold "picker.sh --list n=$n" "$PERF_LAST_AVG_MS" "$max_picker_ms"
+  measure "status.sh n=$n" 'scripts/status.sh'
+  medians["status|$n"]="$PERF_MEDIAN_MS"
+  check_threshold "status.sh n=$n" "$PERF_MEDIAN_MS" "$max_status_ms"
+  measure "picker.sh --list n=$n" 'scripts/picker.sh --list'
+  medians["picker|$n"]="$PERF_MEDIAN_MS"
+  check_threshold "picker.sh --list n=$n" "$PERF_MEDIAN_MS" "$max_picker_ms"
   printf '\n'
 done
 
+check_growth 'status.sh' "${medians[status|50]}" "${medians[status|100]}"
+check_growth 'picker.sh --list' "${medians[picker|50]}" "${medians[picker|100]}"
+
+if [ "$FAILURES" -gt 0 ]; then
+  printf 'not ok - performance smoke test: %s check(s) failed\n' "$FAILURES" >&2
+  exit 1
+fi
 printf 'ok - performance smoke test completed\n'
