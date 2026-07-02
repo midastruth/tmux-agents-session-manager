@@ -21,6 +21,16 @@ blocked|working|done|idle) ;;
 *) exit 0 ;;
 esac
 
+# If the user is actively watching this managed session's pane right now, there
+# is nothing left to "discover" later, so downgrade "done" to "idle" instead of
+# leaving a stale badge until the session is reopened. This mirrors the bundled
+# Pi extension's agent_end shortcut, so agents wired through hooks (e.g. Codex's
+# Stop hook running state.sh done) behave like pi. Manual panes never take this
+# shortcut (see is_watched_managed_pane).
+if [ "$state" = done ] && is_watched_managed_pane "$TMUX_PANE"; then
+  state=idle
+fi
+
 # Build one tmux invocation instead of spawning a process for every option.
 args=(
   set-option -p -t "$TMUX_PANE" @agent_state "$state"

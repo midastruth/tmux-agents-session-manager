@@ -124,6 +124,8 @@ run_group() {
       joined=" $* "
       if [[ "$joined" == *' -F '* ]]; then
         printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
+      elif [[ "$joined" == *'#{session_attached}'* ]]; then
+        printf '%s' "${TMUX_MOCK_PANE_VISIBLE:-0 0 0}"
       elif [[ "$joined" == *'#{session_name}'* ]]; then
         printf '%s' "${TMUX_MOCK_PANE_SESSION:-${TMUX_MOCK_CURRENT_SESSION:-}}"
       elif [[ "$joined" == *'#S'* ]]; then
@@ -252,6 +254,7 @@ reset_mocks() {
   unset TMUX_MOCK_OPTIONS TMUX_MOCK_TARGET_OPTIONS TMUX_MOCK_STATUS_OPTIONS \
     TMUX_MOCK_LIST_SESSIONS TMUX_MOCK_LIST_PANES TMUX_MOCK_LIST_CLIENTS \
     TMUX_MOCK_HAS_SESSION TMUX_MOCK_CURRENT_SESSION TMUX_MOCK_PANE_SESSION \
+    TMUX_MOCK_PANE_VISIBLE \
     TMUX_MOCK_PS_CHILDREN TMUX_MOCK_PS_COMM \
     AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS TMUX_PANE
 }
@@ -483,6 +486,25 @@ export TMUX_PANE TMUX_MOCK_PANE_SESSION
 run_bash 'scripts/state.sh nonsense' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_not_contains 'state.sh ignores invalid states' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tnonsense'
+
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+TMUX_MOCK_PANE_VISIBLE='1 1 1'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh downgrades done to idle on watched managed pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tidle'
+assert_not_contains 'state.sh does not record done on watched managed pane' "$log_contents" $'@agent_state\tdone'
+
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='work'
+TMUX_MOCK_PANE_VISIBLE='1 1 1'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh keeps done on watched manual pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
 
 # launch.sh
 reset_mocks

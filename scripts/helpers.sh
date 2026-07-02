@@ -27,6 +27,38 @@ is_managed_session() {
   [[ "$session" == "$prefix"* ]]
 }
 
+# is_pane_visible <pane>
+# Succeeds when a client is currently looking at <pane>: its session is
+# attached, its window is the active window, and it is the active pane there.
+# tmux can only detect client attachment, not terminal focus, so callers should
+# restrict this to managed sessions (see is_watched_managed_pane).
+is_pane_visible() {
+  local pane="$1" out attached win_active pane_active
+  [ -n "$pane" ] || return 1
+  out="$(tmux display-message -p -t "$pane" \
+    '#{session_attached} #{window_active} #{pane_active}' 2>/dev/null)"
+  [ -n "$out" ] || return 1
+  read -r attached win_active pane_active <<EOF
+$out
+EOF
+  [ "$attached" != 0 ] && [ "$win_active" = 1 ] && [ "$pane_active" = 1 ]
+}
+
+# is_watched_managed_pane <pane>
+# Succeeds when <pane> belongs to a managed agent session that a client is
+# currently watching. Mirrors the bundled Pi extension's isWatchedManagedPane:
+# managed sessions live inside the plugin popup, so closing the popup detaches
+# the client, which makes session_attached a reliable "being watched" signal.
+# Used to skip a stale "done" badge when the user watched the turn finish.
+is_watched_managed_pane() {
+  local pane="$1" session
+  [ -n "$pane" ] || return 1
+  session="$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)"
+  [ -n "$session" ] || return 1
+  is_managed_session "$session" || return 1
+  is_pane_visible "$pane"
+}
+
 # mark_managed_session_seen_if_done <session>
 # Opening a managed session that has reported session-scoped "done" marks that
 # finished turn as seen. Pi/state.sh write both session-scoped and pane-scoped

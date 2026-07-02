@@ -190,12 +190,13 @@ timeout = 1
 This gives Codex the animated `working` badge on turn start (the old `notify`
 hook could only report `done`).
 
-Note one asymmetry: `state.sh done` always records `done`, even when the
-session is attached and visible. Only the bundled Pi extension applies the
-"skip `done` when the managed session is being watched" shortcut described in
-the footnote above, so other agents (e.g. Codex via the `Stop` hook) briefly
-show `done` even if you watched the turn finish; opening the session from the
-picker or launcher clears it back to `idle`.
+`state.sh` applies the same "skip `done` when the managed session is being
+watched" shortcut as the bundled Pi extension: when the `Stop` hook fires while
+you are actively watching the managed session's pane (its session is attached
+and this is the active pane in the active window), the recorded state is
+downgraded from `done` to `idle` so the badge does not get stuck. Manual panes
+(non-managed sessions) never take this shortcut and always record `done`, since
+client attachment is not a reliable "watching" signal outside the popup flow.
 
 ## Status line summary
 
