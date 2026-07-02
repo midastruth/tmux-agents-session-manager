@@ -42,8 +42,9 @@ host_client() {
 sess="$(nested_session)"
 if [ -n "$sess" ]; then
   tmux detach-client -s "$sess"
-  # Wait until the session is gone
-  for _ in $(seq 1 100); do
+  # Wait briefly until the popup client detaches. Do not block the binding for
+  # several seconds if tmux/client state is stale.
+  for _ in $(seq 1 20); do
     [ -z "$(nested_session)" ] && break
     sleep 0.05
   done
@@ -65,12 +66,14 @@ if [ -n "$invoking_client" ]; then
 fi
 # Fall back to scanning for any non-managed client.
 [ -n "$host" ] || host="$(host_client)"
-tmux set-option -gq @agent_parent "$host"
 
 # Host the picker on the outer client. -c is honored because that client has no
-# popup open now; fall back to the default client if none was found.
+# popup open now; pass the parent client as an argument instead of storing it in
+# a global tmux option, so concurrent tmux clients do not clobber one another.
+picker_q=$(printf '%q' "$DIR/picker.sh")
+host_q=$(printf '%q' "$host")
 if [ -n "$host" ]; then
-  tmux display-popup -c "$host" -w "$w" -h "$h" -E "$DIR/picker.sh"
+  tmux display-popup -c "$host" -w "$w" -h "$h" -E "$picker_q $host_q"
 else
-  tmux display-popup -w "$w" -h "$h" -E "$DIR/picker.sh"
+  tmux display-popup -w "$w" -h "$h" -E "$picker_q"
 fi

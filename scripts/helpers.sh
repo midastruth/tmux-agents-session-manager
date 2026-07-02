@@ -120,6 +120,16 @@ is_wrapper_command() {
   contains_word "$1" "$(wrapper_commands)"
 }
 
+# process_table_snapshot
+# Portable full process table snapshot: "pid ppid comm". Picker callers can set
+# AGENT_PS_TABLE once per invocation so wrapper detection does not spawn and
+# rescan ps once per pane.
+process_table_snapshot() {
+  command -v ps >/dev/null 2>&1 || return 1
+  ps -axo pid=,ppid=,comm= 2>/dev/null ||
+    ps -eo pid=,ppid=,comm= 2>/dev/null
+}
+
 # resolve_pane_agent <pane-current-command> <pane-pid>
 # Prints the detected agent name for a pane, or nothing if none matches.
 #
@@ -129,7 +139,7 @@ is_wrapper_command() {
 # descendants of <pane-pid> and return the first child whose comm matches the
 # detect list. This makes codex discoverable while keeping bare commands fast.
 resolve_pane_agent() {
-  local cmd="$1" pid="$2"
+  local cmd="$1" pid="$2" table out
   if is_detected_command "$cmd"; then
     printf '%s' "$cmd"
     return 0
@@ -138,57 +148,48 @@ resolve_pane_agent() {
   # Only known wrappers get a process-subtree scan. Walking every non-agent pane
   # is expensive in large tmux workspaces and status.sh runs repeatedly.
   is_wrapper_command "$cmd" || return 1
-  # ps may be unavailable in minimal environments; fail quietly if so.
-  command -v ps >/dev/null 2>&1 || return 1
-  # Snapshot the full process table once (pid ppid comm). GNU ps supports
-  # `--ppid` for per-parent queries, but BSD/macOS ps does not, so we read the
-  # whole table here and filter by parent in-process. This keeps the subtree
-  # walk portable across Linux and macOS.
-  local table
-  table=$(ps -axo pid=,ppid=,comm= 2>/dev/null) ||
-    table=$(ps -eo pid=,ppid=,comm= 2>/dev/null) || return 1
-  # tmux's pane_current_command can lag behind the real foreground comm (e.g. it
-  # reports the launching "node" while the actual process renamed itself to
-  # "pi"). Check the pane root pid's own comm from the snapshot before walking
-  # descendants, so such renamed-in-place agents are still detected.
-  local root_comm
-  root_comm=$(
-    while read -r rpid rppid rcomm; do
-      [ "$rpid" = "$pid" ] && { printf '%s' "${rcomm##*/}"; break; }
-    done <<EOF
-$table
-EOF
-  )
-  if [ -n "$root_comm" ] && is_detected_command "$root_comm"; then
-    printf '%s' "$root_comm"
-    return 0
+
+  table="${AGENT_PS_TABLE:-}"
+  if [ -z "$table" ] && [ "${AGENT_PS_TABLE_READY:-}" != 1 ]; then
+    table="$(process_table_snapshot 2>/dev/null)" || return 1
   fi
-  # Breadth-first walk of the process subtree rooted at $pid.
-  local queue="$pid" current child cpid cppid ccomm comm rpid rppid rcomm
-  while [ -n "$queue" ]; do
-    current="${queue%% *}"
-    case "$queue" in
-    *" "*) queue="${queue#* }" ;;
-    *) queue="" ;;
-    esac
-    while read -r cpid cppid ccomm; do
-      [ "$cppid" = "$current" ] || continue
-      # Guard against self-parenting rows (e.g. pid 0, whose ppid is itself):
-      # without it such a row would re-enqueue $current forever. A real process
-      # tree is acyclic, so every other node is still enqueued exactly once.
-      [ "$cpid" = "$current" ] && continue
-      child="$cpid"
-      comm="${ccomm##*/}"
-      if is_detected_command "$comm"; then
-        printf '%s' "$comm"
-        return 0
-      fi
-      queue="$queue $child"
-    done <<EOF
-$table
-EOF
-  done
-  return 1
+  [ -n "$table" ] || return 1
+
+  # Build parent->children and pid->comm indexes in awk, then do one BFS. This
+  # avoids the old O(subtree * process-table) bash loop and lets picker.sh reuse
+  # one ps snapshot for every wrapper pane.
+  out="$({
+    printf '%s\n' "$table"
+  } | awk -v root="$pid" -v detects="$(detect_commands)" '
+    BEGIN {
+      n = split(detects, d, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) if (d[i] != "") wanted[d[i]] = 1
+    }
+    NF >= 3 {
+      pid = $1; ppid = $2; comm = $3
+      sub(/^.*\//, "", comm)
+      cmd[pid] = comm
+      children[ppid] = children[ppid] " " pid
+    }
+    END {
+      if (cmd[root] in wanted) { print cmd[root]; exit 0 }
+      head = tail = 1; q[1] = root; seen[root] = 1
+      while (head <= tail) {
+        cur = q[head++]
+        k = split(children[cur], kids, " ")
+        for (i = 1; i <= k; i++) {
+          child = kids[i]
+          if (child == "" || seen[child] || child == cur) continue
+          seen[child] = 1
+          if (cmd[child] in wanted) { print cmd[child]; exit 0 }
+          q[++tail] = child
+        }
+      }
+      exit 1
+    }
+  ')" || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
 }
 
 # agents_config

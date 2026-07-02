@@ -58,7 +58,7 @@ emit_managed_rows() {
       # The agent recorded at launch, falling back to whatever runs in the pane.
       [ -n "$tool" ] || tool=${cmd##*/}
       split_classify "$state"
-      if [ -n "$at" ]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
+      if [[ "$at" =~ ^[0-9]+$ ]]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
       # rank \t kind \t target \t label \t name \t age \t path \t desc \t tool
       printf '%s\tsession\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$rank" "$s" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$tool"
@@ -66,34 +66,57 @@ emit_managed_rows() {
 }
 
 emit_manual_rows() {
-  local now s pane cmd ppid path state at opts base name rank label desc ago
+  local now panes s pane cmd ppid path state at opts line base name rank label desc ago
   now=$(date +%s)
-  tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null |
-    while IFS=$'\t' read -r s pane cmd ppid path; do
-      # Managed sessions are already listed as managed agent sessions.
-      is_managed_session "$s" && continue
-      # Resolve the agent name, including wrappers (codex runs under node) by
-      # walking the pane's process subtree only for known wrapper commands.
-      # Empty -> not an agent pane.
-      base="$(resolve_pane_agent "${cmd##*/}" "$ppid")" || continue
-      [ -n "$base" ] || continue
-      name=${path##*/}
-      # Per-pane state, written by the extension/state.sh when loaded. Falls back
-      # to a plain "manual" marker when no status extension is attached.
-      opts="$(tmux show-options -pqv -t "$pane" @agent_state \
-        \; show-options -pqv -t "$pane" @agent_state_at)" || exit $?
-      state=${opts%%$'\n'*}
-      at=${opts#*$'\n'}
-      [ "$at" = "$opts" ] && at=''
-      if [ -n "$state" ]; then
-        split_classify "$state"
-      else
-        rank=2; label='🟣 manual '; desc="pane running $base"
-      fi
-      if [ -n "$at" ]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
-      printf '%s\tpane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$rank" "$pane" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$base"
-    done
+  panes="$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null)" || return 0
+
+  # Snapshot ps at most once, and only when at least one non-managed pane is
+  # running a configured wrapper command. This preserves the cheap direct-command
+  # path while avoiding one full process-table scan per node/npm/bun pane.
+  AGENT_PS_TABLE=''
+  AGENT_PS_TABLE_READY=0
+  while IFS=$'\t' read -r s pane cmd ppid path; do
+    [ -z "$pane" ] && continue
+    is_managed_session "$s" && continue
+    if is_wrapper_command "${cmd##*/}"; then
+      AGENT_PS_TABLE="$(process_table_snapshot 2>/dev/null || true)"
+      AGENT_PS_TABLE_READY=1
+      break
+    fi
+  done <<< "$panes"
+
+  while IFS=$'\t' read -r s pane cmd ppid path; do
+    # Managed sessions are already listed as managed agent sessions.
+    is_managed_session "$s" && continue
+    # Resolve the agent name, including wrappers (codex runs under node) by
+    # walking the pane's process subtree only for known wrapper commands.
+    # Empty -> not an agent pane.
+    base="$(resolve_pane_agent "${cmd##*/}" "$ppid")" || continue
+    [ -n "$base" ] || continue
+    name=${path##*/}
+    # Per-pane state, written by the extension/state.sh when loaded. Falls back
+    # to a plain "manual" marker when no status extension is attached. Use
+    # named option output because -qv omits unset values and can shift fields.
+    opts="$(tmux show-options -pq -t "$pane")" || exit $?
+    state=''
+    at=''
+    while IFS= read -r line; do
+      case "$line" in
+      "@agent_state "*)    state="${line#@agent_state }" ;;
+      "@agent_state_at "*) at="${line#@agent_state_at }" ;;
+      # Compatibility with older tests/mocks that output values only.
+      blocked|working|done|idle) [ -z "$state" ] && state="$line" ;;
+      esac
+    done <<< "$opts"
+    if [ -n "$state" ]; then
+      split_classify "$state"
+    else
+      rank=2; label='🟣 manual '; desc="pane running $base"
+    fi
+    if [[ "$at" =~ ^[0-9]+$ ]]; then ago="$(((now - at) / 60))m"; else ago='-'; fi
+    printf '%s\tpane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$rank" "$pane" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$base"
+  done <<< "$panes"
 }
 
 emit_rows() {
@@ -139,7 +162,8 @@ open_session_target() {
   # then resume the session in THIS popup over it. Falls back to resuming over the
   # current window when origin/parent are unknown.
   origin=$(tmux show-options -qv -t "$target" @agent_origin 2>/dev/null)
-  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
+  parent="${parent_client:-}"
+  [ -n "$parent" ] || parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
   [ -n "$origin" ] && [ -n "$parent" ] &&
     tmux switch-client -c "$parent" -t "$origin" 2>/dev/null
 
@@ -154,7 +178,8 @@ open_pane_target() {
   # Opening a completed manual pane marks it as seen.
   mark_pane_seen_if_done "$target"
 
-  parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
+  parent="${parent_client:-}"
+  [ -n "$parent" ] || parent=$(tmux show-options -gqv @agent_parent 2>/dev/null)
   if [ -n "$parent" ]; then
     tmux switch-client -c "$parent" -t "$target" 2>/dev/null || tmux switch-client -t "$target"
   else
@@ -179,6 +204,8 @@ open_target() {
   kill_target "${2:-}" "${3:-}"
   exit 0
 }
+
+parent_client="${1:-}"
 
 if ! command -v fzf >/dev/null 2>&1; then
   tmux display-message "tmux-agents-session-manager: fzf is required for the picker"

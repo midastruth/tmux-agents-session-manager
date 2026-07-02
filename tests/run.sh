@@ -81,27 +81,79 @@ target_arg() {
 }
 
 show_option() {
-  local opt target
+  local opt target value x value_only=no
   opt="$(last_arg "$@")"
   target="$(target_arg "$@" || true)"
-  if [ -n "$target" ] && target_kv_get "$target" "$opt"; then
+  for x in "$@"; do
+    case "$x" in
+    -*v*) value_only=yes ;;
+    esac
+  done
+  if [ -n "$target" ] && [[ "$opt" != @* ]]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      k="${line%%=*}"
+      value="${line#*=}"
+      case "$k" in
+      "$target|"@*) printf '%s %s\n' "${k#"$target|"}" "$value" ;;
+      esac
+    done <<< "${TMUX_MOCK_TARGET_OPTIONS:-}"
     return 0
   fi
-  kv_get "$opt" || true
+  if [ -n "$target" ]; then
+    value="$(target_kv_get "$target" "$opt" || true)"
+  else
+    value="$(kv_get "$opt" || true)"
+  fi
+  [ -n "$value" ] || return 0
+  if [ "$value_only" = yes ]; then
+    printf '%s' "$value"
+  else
+    printf '%s %s' "$opt" "$value"
+  fi
 }
 
-show_option_chain() {
+run_group() {
+  local group_cmd="$1" joined
+  shift || true
+  case "$group_cmd" in
+    show-option|show-options)
+      show_option "$@"
+      ;;
+    display-message)
+      joined=" $* "
+      if [[ "$joined" == *' -F '* ]]; then
+        printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
+      elif [[ "$joined" == *'#{session_name}'* ]]; then
+        printf '%s' "${TMUX_MOCK_PANE_SESSION:-${TMUX_MOCK_CURRENT_SESSION:-}}"
+      elif [[ "$joined" == *'#S'* ]]; then
+        printf '%s' "${TMUX_MOCK_CURRENT_SESSION:-}"
+      else
+        last_arg "$@"
+      fi
+      ;;
+  esac
+}
+
+run_chain() {
   local -a group=()
-  local arg
+  local arg first=yes
   for arg in "$@"; do
     if [ "$arg" = ';' ]; then
-      [ "${#group[@]}" -gt 0 ] && show_option "${group[@]}" && printf '\n'
+      if [ "${#group[@]}" -gt 0 ]; then
+        [ "$first" = no ] && printf '\n'
+        run_group "${group[@]}"
+        first=no
+      fi
       group=()
     else
       group+=("$arg")
     fi
   done
-  [ "${#group[@]}" -gt 0 ] && show_option "${group[@]}"
+  if [ "${#group[@]}" -gt 0 ]; then
+    [ "$first" = no ] && printf '\n'
+    run_group "${group[@]}"
+  fi
 }
 
 cmd="${1:-}"
@@ -109,18 +161,8 @@ shift || true
 log "$cmd" "$@"
 
 case "$cmd" in
-  show-option|show-options)
-    show_option_chain "$@"
-    ;;
-  display-message)
-    joined=" $* "
-    if [[ "$joined" == *' -F '* ]]; then
-      printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
-    elif [[ "$joined" == *'#{session_name}'* ]]; then
-      printf '%s' "${TMUX_MOCK_PANE_SESSION:-${TMUX_MOCK_CURRENT_SESSION:-}}"
-    elif [[ "$joined" == *'#S'* ]]; then
-      printf '%s' "${TMUX_MOCK_CURRENT_SESSION:-}"
-    fi
+  show-option|show-options|display-message)
+    run_chain "$cmd" "$@"
     ;;
   list-sessions)
     [ -n "${TMUX_MOCK_LIST_SESSIONS:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_SESSIONS"
@@ -262,7 +304,8 @@ status_options() {
   local animate="${2:-off}"
   local color="${3:-off}"
   local show_idle="${4:-off}"
-  printf '%s' "${prefix}${us}✦${us}✓${us}●${us}·${us}agents${us}${animate}${us}✦ ✶ ✷ ✶${us}yellow${us}cyan${us}red${us}green${us}${color}${us}${show_idle}"
+  local ttl="${5:-21600}"
+  printf '%s' "${prefix}${us}✦${us}✓${us}●${us}·${us}agents${us}${animate}${us}✦ ✶ ✷ ✶${us}yellow${us}cyan${us}red${us}green${us}${color}${us}${show_idle}${us}${ttl}"
 }
 
 # helpers.sh
@@ -366,6 +409,28 @@ TMUX_MOCK_LIST_SESSIONS=$'agent-a\tblocked\nagent-b\tidle'
 out="$(run_bash 'scripts/status.sh')"
 assert_eq 'status.sh can render color and idle segments' 'agents #[fg=red]1●#[default] #[fg=green]1·#[default]' "$out"
 
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off)"
+stale_at=$(( $(date +%s) - 30000 ))
+TMUX_MOCK_LIST_PANES=$'work\t%1'
+TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=working"$'\n'"%1|@agent_state_at=$stale_at"
+out="$(run_bash 'scripts/status.sh --or fallback')"
+assert_eq 'status.sh ignores stale pane state by default' 'fallback' "$out"
+
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off)"
+TMUX_MOCK_LIST_PANES=$'work\t%1'
+TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=done"$'\n'"%1|@agent_state_at=$stale_at"
+out="$(run_bash 'scripts/status.sh')"
+assert_eq 'status.sh keeps stale done state visible' 'agents 1✓' "$out"
+
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 0)"
+TMUX_MOCK_LIST_PANES=$'work\t%1'
+TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=working"$'\n'"%1|@agent_state_at=$stale_at"
+out="$(run_bash 'scripts/status.sh')"
+assert_eq 'status.sh can disable state expiry' 'agents 1✦' "$out"
+
 # picker.sh --list
 reset_mocks
 picker_home="$HOME"
@@ -400,7 +465,24 @@ export TMUX_PANE TMUX_MOCK_PANE_SESSION
 run_bash 'scripts/state.sh done' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'state.sh writes pane scoped state' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
-assert_contains 'state.sh writes session scoped state' "$log_contents" $'set-option\t-t\tagent-a\t@agent_state\tdone'
+assert_contains 'state.sh writes session scoped state for managed sessions' "$log_contents" $'set-option\t-t\tagent-a\t@agent_state\tdone'
+
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='work'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh still writes pane scoped state for manual panes' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
+assert_not_contains 'state.sh does not pollute manual sessions' "$log_contents" $'set-option\t-t\twork\t@agent_state\tdone'
+
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION
+run_bash 'scripts/state.sh nonsense' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'state.sh ignores invalid states' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tnonsense'
 
 # launch.sh
 reset_mocks

@@ -89,10 +89,12 @@ function setState(state: "blocked" | "working" | "done" | "idle") {
     addTmuxCommand(["set-option", "-p", "-t", pane, "@agent_state_at", now]);
   }
 
-  // Session-scoped state: keeps managed sessions (one agent per session)
-  // working as before.
+  // Session-scoped state is authoritative only for managed sessions (one agent
+  // per tmux session). Manual panes can share a session, so session-level state
+  // there would be last-writer-wins pollution and may leak through tmux format
+  // fallback.
   const session = currentTmuxSession();
-  if (session) {
+  if (session && session.startsWith(managedSessionPrefix())) {
     addTmuxCommand(["set-option", "-t", session, "@agent_state", state]);
     addTmuxCommand(["set-option", "-t", session, "@agent_state_at", now]);
   }

@@ -9,12 +9,14 @@
 # Codex has no "turn started" event, so `working` is not reported here.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ -n "${CODEX_NOTIFY_DEBUG:-}" ] || [ -f /tmp/codex_notify.debug ]; then
+debug_file="${CODEX_NOTIFY_DEBUG_FILE:-${HOME:-/tmp}/.codex_notify.debug}"
+log_file="${CODEX_NOTIFY_LOG:-${HOME:-/tmp}/.codex_notify.log}"
+if [ -n "${CODEX_NOTIFY_DEBUG:-}" ] || [ -f "$debug_file" ]; then
   {
     echo "--- $(date '+%F %T') ---"
     echo "TMUX_PANE=${TMUX_PANE:-<unset>} argc=$#"
     i=0; for a in "$@"; do echo "arg$i=$a"; i=$((i+1)); done
-  } >>/tmp/codex_notify.log 2>&1
+  } >>"$log_file" 2>&1
 fi
 
 payload="${1:-}"

@@ -7,8 +7,19 @@
 # @agent_state_at options.
 [ -z "$TMUX_PANE" ] && exit 0
 
+SOURCE_PATH="${BASH_SOURCE[0]}"
+DIR="${SOURCE_PATH%/*}"
+[ "$DIR" = "$SOURCE_PATH" ] && DIR=.
+DIR="$(cd "$DIR" && pwd)"
+# shellcheck source=helpers.sh
+. "$DIR/helpers.sh"
+
 now="$(date +%s)"
 state="${1:-idle}"
+case "$state" in
+blocked|working|done|idle) ;;
+*) exit 0 ;;
+esac
 
 # Build one tmux invocation instead of spawning a process for every option.
 args=(
@@ -16,9 +27,11 @@ args=(
   \; set-option -p -t "$TMUX_PANE" @agent_state_at "$now"
 )
 
-# Session-scoped: keeps managed sessions working as before.
+# Session-scoped state is authoritative only for managed sessions (one agent per
+# tmux session). Manual panes can share a session, so session-level state there
+# would be last-writer-wins pollution and may leak through tmux format fallback.
 session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
-if [ -n "$session" ]; then
+if [ -n "$session" ] && is_managed_session "$session"; then
   args+=(
     \; set-option -t "$session" @agent_state "$state"
     \; set-option -t "$session" @agent_state_at "$now"

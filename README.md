@@ -270,7 +270,11 @@ set -g @agent_status_color_done    'cyan'
 set -g @agent_status_color_idle    'green'
 set -g @agent_status_animate_working 'on'   # 'on' animates the working icon
 set -g @agent_status_anim_frames     '✦ ✶ ✷ ✶'  # spinner frames (space-separated)
+set -g @agent_state_ttl              '21600'      # seconds before stale states are ignored; 0 disables
 ```
+
+The stale-state TTL prevents crashed/killed agents from leaving a permanent
+`working`/`blocked` badge when they cannot report shutdown cleanly.
 
 The status script also exposes a path-free reference via the
 `@agent_status_script` tmux option (set by the plugin on load), so your config

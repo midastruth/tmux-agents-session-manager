@@ -39,8 +39,17 @@ if is_managed_session "$(tmux display-message -p '#S')"; then
   exit 0
 fi
 
+created=0
 if ! tmux has-session -t "$session" 2>/dev/null; then
-  tmux new-session -d -s "$session" -c "$path" "$cmd"
+  if tmux new-session -d -s "$session" -c "$path" "$cmd"; then
+    created=1
+  elif ! tmux has-session -t "$session" 2>/dev/null; then
+    tmux display-message "Failed to create agent session: $session"
+    exit 0
+  fi
+fi
+
+if [ "$created" -eq 1 ]; then
   tmux set-option -t "$session" @agent_state idle
   tmux set-option -t "$session" @agent_state_at "$(date +%s)"
   # Record which agent this session runs (first token's basename of $cmd), so
@@ -55,4 +64,5 @@ fi
 # Opening a completed session marks it as seen.
 mark_managed_session_seen_if_done "$session"
 
-tmux display-popup -w "$w" -h "$h" -E "tmux attach-session -t $session"
+session_q=$(printf '%q' "$session")
+tmux display-popup -w "$w" -h "$h" -E "tmux attach-session -t $session_q"

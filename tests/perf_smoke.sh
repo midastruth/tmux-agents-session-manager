@@ -51,41 +51,82 @@ target_arg() {
 }
 
 show_option() {
-  local opt target
+  local opt target value x value_only=no
   opt="$(last_arg "$@")"
   target="$(target_arg "$@" || true)"
-  if [ -n "$target" ]; then
-    kv_get "${TMUX_MOCK_TARGET_OPTIONS:-}" "$target|$opt" || true
+  for x in "$@"; do
+    case "$x" in
+    -*v*) value_only=yes ;;
+    esac
+  done
+  if [ -n "$target" ] && [[ "$opt" != @* ]]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      k="${line%%=*}"
+      value="${line#*=}"
+      case "$k" in
+      "$target|"@*) printf '%s %s\n' "${k#"$target|"}" "$value" ;;
+      esac
+    done <<< "${TMUX_MOCK_TARGET_OPTIONS:-}"
     return 0
   fi
-  kv_get "${TMUX_MOCK_OPTIONS:-}" "$opt" || true
+  if [ -n "$target" ]; then
+    value="$(kv_get "${TMUX_MOCK_TARGET_OPTIONS:-}" "$target|$opt" || true)"
+  else
+    value="$(kv_get "${TMUX_MOCK_OPTIONS:-}" "$opt" || true)"
+  fi
+  [ -n "$value" ] || return 0
+  if [ "$value_only" = yes ]; then
+    printf '%s' "$value"
+  else
+    printf '%s %s' "$opt" "$value"
+  fi
 }
 
-show_option_chain() {
+run_group() {
+  local group_cmd="$1" joined
+  shift || true
+  case "$group_cmd" in
+    show-option|show-options)
+      show_option "$@"
+      ;;
+    display-message)
+      joined=" $* "
+      if [[ "$joined" == *' -F '* ]]; then
+        printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
+      else
+        last_arg "$@"
+      fi
+      ;;
+  esac
+}
+
+run_chain() {
   local -a group=()
-  local arg
+  local arg first=yes
   for arg in "$@"; do
     if [ "$arg" = ';' ]; then
-      [ "${#group[@]}" -gt 0 ] && show_option "${group[@]}" && printf '\n'
+      if [ "${#group[@]}" -gt 0 ]; then
+        [ "$first" = no ] && printf '\n'
+        run_group "${group[@]}"
+        first=no
+      fi
       group=()
     else
       group+=("$arg")
     fi
   done
-  [ "${#group[@]}" -gt 0 ] && show_option "${group[@]}"
+  if [ "${#group[@]}" -gt 0 ]; then
+    [ "$first" = no ] && printf '\n'
+    run_group "${group[@]}"
+  fi
 }
 
 cmd="${1:-}"
 shift || true
 case "$cmd" in
-  display-message)
-    joined=" $* "
-    if [[ "$joined" == *' -F '* ]]; then
-      printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
-    fi
-    ;;
-  show-option|show-options)
-    show_option_chain "$@"
+  display-message|show-option|show-options)
+    run_chain "$cmd" "$@"
     ;;
   list-sessions)
     [ -n "${TMUX_MOCK_LIST_SESSIONS:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_SESSIONS"
@@ -111,7 +152,7 @@ export AGENT_DETECT_WRAPPERS='node bun npx npm pnpm yarn'
 
 status_options() {
   local us=$'\037'
-  printf '%s' "agent-${us}✦${us}✓${us}●${us}·${us}agents${us}off${us}✦ ✶ ✷ ✶${us}yellow${us}cyan${us}red${us}green${us}off${us}off"
+  printf '%s' "agent-${us}✦${us}✓${us}●${us}·${us}agents${us}off${us}✦ ✶ ✷ ✶${us}yellow${us}cyan${us}red${us}green${us}off${us}off${us}21600"
 }
 
 now_ns() {
