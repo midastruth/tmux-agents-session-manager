@@ -295,14 +295,26 @@ assert_contains 'picker --list reads manual pane state and timestamp' "$out" $'p
 
 # state.sh
 reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_status=on'
 TMUX_PANE='%1'
 TMUX_MOCK_PANE_SESSION='agent-a'
-export TMUX_PANE TMUX_MOCK_PANE_SESSION
+export TMUX_MOCK_OPTIONS TMUX_PANE TMUX_MOCK_PANE_SESSION
 run_bash 'scripts/state.sh done' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'state.sh writes pane scoped state' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
 assert_contains 'state.sh writes session scoped state for managed sessions' "$log_contents" $'set-option\t-t\tagent-a\t@agent_state\tdone'
 assert_contains 'state.sh triggers an event-driven status refresh' "$log_contents" $'run-shell\t-b'
+
+# state.sh must NOT fork a status refresh when the badge is disabled
+# (@agent_status unset/off): users who never enabled the badge pay nothing.
+reset_mocks
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+export TMUX_PANE TMUX_MOCK_PANE_SESSION
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh still writes state when badge disabled' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
+assert_not_contains 'state.sh skips status refresh when badge disabled' "$log_contents" $'run-shell\t-b'
 
 reset_mocks
 TMUX_PANE='%1'

@@ -276,6 +276,9 @@ refresh|animate)
   if [ "$WORKING_COUNT" -gt 0 ] && [ "$animate_working" = on ]; then
     working_flag=1
   fi
+  # Read the previous cache so a no-op refresh (same badge reported again by a
+  # chatty integration) can skip the status-line redraw below.
+  prev_cache="$(tmux show-option -gqv @agent_status_cache 2>/dev/null || true)"
   tmux set-option -g @agent_status_cache "$SUMMARY" \
     \; set-option -g @agent_status_working "$working_flag" 2>/dev/null || true
 
@@ -286,7 +289,8 @@ refresh|animate)
     if [ -z "$working_flag" ]; then
       tmux refresh-client -S 2>/dev/null || true
     fi
-  else
+  elif [ "$SUMMARY" != "$prev_cache" ]; then
+    # Only redraw the status line when the cached badge actually changed.
     tmux refresh-client -S 2>/dev/null || true
   fi
   ;;

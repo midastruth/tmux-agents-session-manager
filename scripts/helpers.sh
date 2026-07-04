@@ -15,14 +15,18 @@ fi
 # Recompute the cached status badge (@agent_status_cache) in the background, so
 # the event-driven status line updates promptly after a state change without any
 # periodic polling. Safe to call from hot paths: it backgrounds status.sh and
-# returns immediately, and is a no-op when the auto-injected status line is off
-# (status.sh --refresh just rewrites an unused option). SOURCE_PATH/DIR from the
-# caller locate status.sh next to this helper.
+# returns immediately. Gated on @agent_status being enabled, so users who never
+# turned on the badge pay nothing on every reported state change (no fork of
+# status.sh --refresh, no refresh-client). SOURCE_PATH/DIR from the caller
+# locate status.sh next to this helper.
 # shellcheck disable=SC2120  # dir arg is optional; callers rely on the default.
 trigger_status_refresh() {
   local dir="${1:-${STATUS_HELPERS_DIR:-}}"
   [ -n "$dir" ] || return 0
   [ -x "$dir/status.sh" ] || return 0
+  # Only refresh when the auto-injected badge is enabled; otherwise the cache is
+  # unused and the refresh (plus its refresh-client -S redraw) is pure overhead.
+  [ "$(tmux show-option -gqv @agent_status 2>/dev/null)" = on ] || return 0
   tmux run-shell -b "$dir/status.sh --refresh" 2>/dev/null || true
 }
 

@@ -24,9 +24,13 @@ function statusScriptPath(): string | undefined {
 // the event-driven status line updates promptly after a reported state change,
 // with no periodic polling. Mirrors trigger_status_refresh() in
 // scripts/helpers.sh. Fire-and-forget: `tmux run-shell -b` backgrounds it.
+// Gated on @agent_status being enabled so users who never turned on the badge
+// pay nothing (no fork of status.sh --refresh, no refresh-client) on every
+// reported state change.
 function triggerStatusRefresh() {
   const script = statusScriptPath();
   if (!script) return;
+  if (runTmux(["show-option", "-gqv", "@agent_status"]) !== "on") return;
   runTmux(["run-shell", "-b", `${script} --refresh`]);
 }
 

@@ -49,8 +49,10 @@ status_enabled="$(get_tmux_option @agent_status 'off')"
 if [ "$status_enabled" = on ]; then
   status_interval="$(get_tmux_option @agent_status_interval '1')"
   # While working: fork status.sh --animate to advance the spinner.
-  # Otherwise:     expand the cached badge (or #h when it is empty). Zero forks.
-  summary="#{?@agent_status_working,#($CURRENT_DIR/scripts/status.sh --animate),#{?@agent_status_cache,#{@agent_status_cache},#h}}"
+  # Otherwise:     expand the cached badge. Zero forks. When the cache is empty
+  # (no reported agent states) nothing is printed, matching the documented
+  # behavior; use #(status.sh --or-host) directly if you want a host fallback.
+  summary="#{?@agent_status_working,#($CURRENT_DIR/scripts/status.sh --animate),#{@agent_status_cache}}"
   current_right="$(tmux show-option -gqv status-right)"
   # Avoid appending twice on plugin reload. Match either the new marker option
   # or a legacy raw #(status.sh) embed from an earlier version of this plugin.
