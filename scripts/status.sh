@@ -149,13 +149,14 @@ compute_summary() {
 
   # Managed sessions (session-scoped @agent_state). Read state in the list call
   # to avoid one extra tmux process per session on every status refresh.
-  local s state at
+  local s state at session_rows
+  session_rows="$(tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}' 2>/dev/null)" || return 1
   while IFS=$'\t' read -r s state at; do
     [ -z "$s" ] && continue
     is_managed_session "$s" || continue
     [ -n "$state" ] || continue
     count_state "$state" "$at"
-  done < <(tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}' 2>/dev/null)
+  done <<< "$session_rows"
 
   # Manual agent panes. Do not discover agents from process names here:
   # status.sh runs from status-right and may execute every second. A manual pane
@@ -164,29 +165,70 @@ compute_summary() {
   # Do not read #{@agent_state} from list-panes here: tmux formats fall back to
   # session-scoped options, which would count every pane in a manual session
   # with session state.
-  local pane
+  local pane pane_rows
   local -a manual_panes=()
+  pane_rows="$(tmux list-panes -a -F '#{session_name}	#{pane_id}' 2>/dev/null)" || return 1
   while IFS=$'\t' read -r s pane; do
     [ -z "$pane" ] && continue
     is_managed_session "$s" && continue
     manual_panes+=("$pane")
-  done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}' 2>/dev/null)
+  done <<< "$pane_rows"
+
+  pane_in_list() {
+    local needle="$1" haystack="$2" line
+    while IFS= read -r line; do
+      [ "$line" = "$needle" ] && return 0
+    done <<< "$haystack"
+    return 1
+  }
+
+  filter_existing_manual_panes() {
+    local existing="$1" pane
+    filtered_panes=()
+    for pane in "${manual_panes[@]}"; do
+      pane_in_list "$pane" "$existing" && filtered_panes+=("$pane")
+    done
+  }
+
+  query_manual_pane_states() {
+    local pane pane_states existing before_count
+    local -a pane_state_cmd filtered_panes
+    while [ "${#manual_panes[@]}" -gt 0 ]; do
+      pane_state_cmd=(tmux)
+      for pane in "${manual_panes[@]}"; do
+        if [ "${#pane_state_cmd[@]}" -gt 1 ]; then
+          pane_state_cmd+=(\;)
+        fi
+        pane_state_cmd+=(display-message -p -t "$pane" "__agent_pane__ $pane")
+        pane_state_cmd+=(\; show-options -pq -t "$pane")
+      done
+      if pane_states="$("${pane_state_cmd[@]}" 2>/dev/null)"; then
+        printf '%s' "$pane_states"
+        return 0
+      fi
+
+      # A pane may close between list-panes and this batched query. That race is
+      # safe to recover from, but only after a fresh list-panes confirms at
+      # least one queried pane is now gone. If every target still exists (or the
+      # confirmation query fails), this is a real tmux failure and the caller
+      # must not publish a partial/empty cache.
+      existing="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 1
+      before_count="${#manual_panes[@]}"
+      filter_existing_manual_panes "$existing"
+      manual_panes=("${filtered_panes[@]}")
+      [ "${#manual_panes[@]}" -eq 0 ] && return 0
+      [ "${#manual_panes[@]}" -lt "$before_count" ] || return 1
+    done
+    return 0
+  }
 
   # Read pane-scoped state for all manual panes with one tmux client process.
   # Use named option output plus a marker line per pane, because show-options
   # -qv emits no placeholder for unset options; relying on line positions would
   # mis-associate @agent_state and @agent_state_at when one is missing.
   if [ "${#manual_panes[@]}" -gt 0 ]; then
-    local -a pane_state_cmd=(tmux)
-    for pane in "${manual_panes[@]}"; do
-      if [ "${#pane_state_cmd[@]}" -gt 1 ]; then
-        pane_state_cmd+=(\;)
-      fi
-      pane_state_cmd+=(display-message -p -t "$pane" "__agent_pane__ $pane")
-      pane_state_cmd+=(\; show-options -pq -t "$pane")
-    done
     local pane_states
-    pane_states="$("${pane_state_cmd[@]}" 2>/dev/null)" || exit $?
+    pane_states="$(query_manual_pane_states)" || return 1
 
     local current_pane='' pane_state='' pane_at='' line
     flush_pane_state() {
@@ -258,7 +300,7 @@ compute_summary() {
 }
 
 status_now="$(date +%s)"
-compute_summary
+compute_summary || exit 1
 
 case "$mode" in
 print)
@@ -278,19 +320,24 @@ refresh|animate)
   fi
   # Read the previous cache so a no-op refresh (same badge reported again by a
   # chatty integration) can skip the status-line redraw below.
-  prev_cache="$(tmux show-option -gqv @agent_status_cache 2>/dev/null || true)"
+  prev_cache="$(tmux show-option -gqv @agent_status_cache 2>/dev/null)" || exit 1
   tmux set-option -g @agent_status_cache "$SUMMARY" \
-    \; set-option -g @agent_status_working "$working_flag" 2>/dev/null || true
+    \; set-option -g @agent_status_working "$working_flag" 2>/dev/null || exit 1
 
   if [ "$mode" = animate ]; then
     printf '%s' "$SUMMARY"
     # When work just dropped to zero, force a re-eval so tmux switches to the
     # zero-fork cached branch immediately instead of after one more interval.
     if [ -z "$working_flag" ]; then
+      # Redraw is best-effort: hooks/background run-shell calls can have no
+      # current client. The cache update above is the authoritative state
+      # change and must remain fail-fast; a redraw failure should not break the
+      # agent hook that reported the state.
       tmux refresh-client -S 2>/dev/null || true
     fi
   elif [ "$SUMMARY" != "$prev_cache" ]; then
     # Only redraw the status line when the cached badge actually changed.
+    # Best-effort for the same no-current-client cases described above.
     tmux refresh-client -S 2>/dev/null || true
   fi
   ;;

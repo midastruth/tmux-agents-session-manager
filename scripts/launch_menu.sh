@@ -169,5 +169,9 @@ tmux display-popup -B -w "$w" -h "$h" -E "$self_q --select $tmp_q $path_q $windo
 
 agent=''
 [ -s "$tmp" ] && agent="$(<"$tmp")"
+# exec replaces this process without running the EXIT trap, so remove the
+# temp file explicitly first or every successful selection leaks one file.
+rm -f "$tmp"
+trap - EXIT
 [ -n "$agent" ] || exit 0
 exec "$DIR/launch.sh" "$path" "$window" "$agent"

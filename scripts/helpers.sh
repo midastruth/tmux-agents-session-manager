@@ -29,7 +29,9 @@ trigger_status_refresh() {
   # Match agents_session_manager.tmux, which enables the badge by default: treat
   # an unset/empty @agent_status as 'on' and skip only when explicitly 'off'.
   [ "$(get_tmux_option @agent_status 'on')" = on ] || return 0
-  tmux run-shell -b "$dir/status.sh --refresh" 2>/dev/null || true
+  # run-shell passes its argument to a shell: quote the script path so plugin
+  # installs under directories with spaces still work.
+  tmux run-shell -b "$(printf '%q' "$dir/status.sh") --refresh" 2>/dev/null || true
 }
 
 # get_tmux_option <option-name> <default>

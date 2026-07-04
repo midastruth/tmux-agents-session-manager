@@ -69,6 +69,15 @@ humanize_ago() {
   fi
 }
 
+pane_still_exists() {
+  local target="$1" panes pane
+  panes="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 2
+  while IFS= read -r pane; do
+    [ "$pane" = "$target" ] && return 0
+  done <<< "$panes"
+  return 1
+}
+
 # split_classify <state> -> sets $rank $label $desc from classify output.
 split_classify() {
   local info rest
@@ -99,7 +108,7 @@ emit_managed_rows() {
 emit_manual_rows() {
   local now panes s pane cmd ppid path state at opts line base name rank label desc ago
   now=$(picker_now)
-  panes="$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null)" || return 0
+  panes="$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null)" || return 1
 
   # Snapshot ps at most once, and only when at least one non-managed pane is
   # running a configured wrapper command. This preserves the cheap direct-command
@@ -128,7 +137,17 @@ emit_manual_rows() {
     # Per-pane state, written by the extension/state.sh when loaded. Falls back
     # to a plain "manual" marker when no status extension is attached. Use
     # named option output because -qv omits unset values and can shift fields.
-    opts="$(tmux show-options -pq -t "$pane")" || exit $?
+    # The pane may have closed between list-panes and this query; skip only
+    # after a fresh list-panes confirms that race. If the pane still exists (or
+    # the confirmation query itself fails), propagate the tmux failure instead
+    # of silently hiding a manual agent pane.
+    if ! opts="$(tmux show-options -p -t "$pane" 2>/dev/null)"; then
+      pane_still_exists "$pane"
+      case "$?" in
+      1) continue ;;
+      *) return 1 ;;
+      esac
+    fi
     state=''
     at=''
     while IFS= read -r line; do
@@ -154,10 +173,21 @@ emit_rows() {
   {
     emit_managed_rows
     emit_manual_rows
+  } | awk 'BEGIN { FS = OFS = "\t" }
+      {
+        # Decorate: convert the humanized age (45s/12m/3h/2d/-) back into
+        # seconds so the numeric sort compares real ages. Sorting the display
+        # string numerically would rank "3h" (3) before "45s" (45).
+        n = $6 + 0
+        u = substr($6, length($6))
+        secs = (u == "m") ? n * 60 : (u == "h") ? n * 3600 : \
+               (u == "d") ? n * 86400 : n
+        print secs, $0
+      }' |
     # rank asc (attention-needed floats up), then age asc so the session that
-    # finished just now sits at the top of its group. -k6,6n reads the leading
-    # number of the age field ("5m" -> 5; "-" -> 0).
-  } | sort -t$'\t' -k1,1n -k6,6n |
+    # finished just now sits at the top of its group. Field 1 is the sort
+    # decoration (age in seconds), field 2 the rank; strip it after sorting.
+    sort -t$'\t' -k2,2n -k1,1n | cut -f2- |
     # Append a pre-aligned display column (field 10). Two passes: first find the
     # widest project name and tool name, then pad every row to those widths so
     # the tool, age and path columns line up. Logic fields 1-9 stay untouched
@@ -228,7 +258,7 @@ open_target() {
 
 [ "${1:-}" = '--list' ] && {
   emit_rows
-  exit 0
+  exit $?
 }
 
 [ "${1:-}" = '--kill' ] && {

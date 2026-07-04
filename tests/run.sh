@@ -34,7 +34,8 @@ reset_mocks() {
     TMUX_MOCK_LIST_SESSIONS TMUX_MOCK_LIST_PANES TMUX_MOCK_LIST_CLIENTS \
     TMUX_MOCK_LIST_PANES_PICKER TMUX_MOCK_LIST_PANES_STATUS \
     TMUX_MOCK_HAS_SESSION TMUX_MOCK_CURRENT_SESSION TMUX_MOCK_PANE_SESSION \
-    TMUX_MOCK_PANE_VISIBLE \
+    TMUX_MOCK_PANE_VISIBLE TMUX_MOCK_FAIL_TARGETS \
+    TMUX_MOCK_FAIL_REFRESH_CLIENT \
     TMUX_MOCK_PS_CHILDREN TMUX_MOCK_PS_COMM \
     AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS TMUX_PANE \
     PICKER_NOW
@@ -188,6 +189,16 @@ out="$(run_bash 'scripts/status.sh')"
 assert_eq 'status.sh counts self-reported manual panes and ignores managed panes' 'agents 1●' "$out"
 
 reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
+TMUX_MOCK_LIST_PANES=$'work\t%1'
+TMUX_MOCK_FAIL_TARGETS='%1'
+out="$(run_bash 'scripts/status.sh --refresh' 2>/dev/null)"
+rc="$?"
+assert_eq 'status.sh --refresh fails on non-race manual pane query error' '1' "$rc"
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'status.sh --refresh does not publish cache on query error' "$log_contents" $'set-option\t-g\t@agent_status_cache'
+
+reset_mocks
 TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off on on)"
 TMUX_MOCK_LIST_SESSIONS=$'agent-a\tblocked\nagent-b\tidle'
 out="$(run_bash 'scripts/status.sh')"
@@ -226,6 +237,21 @@ log_contents="$(<"$TMUX_LOG")"
 assert_contains 'status.sh --refresh caches the summary' "$log_contents" $'set-option\t-g\t@agent_status_cache\tagents 1'
 assert_contains 'status.sh --refresh sets working flag when working' "$log_contents" $'set-option\t-g\t@agent_status_working\t1'
 assert_contains 'status.sh --refresh forces a client redraw' "$log_contents" $'refresh-client\t-S'
+
+# status.sh --refresh: cache updates are authoritative, but the redraw can fail
+# in background hook contexts with no current client. That failure must not make
+# the hook fail after the cache was successfully published.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tdone'
+TMUX_MOCK_FAIL_REFRESH_CLIENT=1
+out="$(run_bash 'scripts/status.sh --refresh')"
+rc="$?"
+assert_eq 'status.sh --refresh ignores redraw-only failure' '0' "$rc"
+assert_eq 'status.sh --refresh with redraw failure prints nothing' '' "$out"
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh --refresh still publishes cache before redraw failure' "$log_contents" $'set-option\t-g\t@agent_status_cache\tagents 1✓'
+assert_contains 'status.sh --refresh attempts best-effort redraw' "$log_contents" $'refresh-client\t-S'
 
 # status.sh --refresh: animation off -> no spinner needed, so the working flag
 # stays cleared even while working (the cache alone drives the badge).
@@ -285,6 +311,18 @@ assert_contains 'picker --list age shows minutes' "$out" $'session\tagent-b\t�
 assert_contains 'picker --list age shows hours' "$out" $'session\tagent-c\t🔴 blocked\tc\t3h'
 assert_contains 'picker --list age shows days' "$out" $'session\tagent-d\t🔴 blocked\td\t2d'
 
+# Rows within the same rank must sort by real age (youngest first), not by the
+# leading number of the humanized age string ("3h" is older than "45s").
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+now_ts="$(date +%s)"
+PICKER_NOW="$now_ts"
+TMUX_MOCK_LIST_SESSIONS="agent-old	blocked	$((now_ts - 10800))	/tmp/old	pi	pi
+agent-new	blocked	$((now_ts - 45))	/tmp/new	pi	pi"
+out="$(run_bash 'scripts/picker.sh --list' | cut -f3 | paste -sd,)"
+assert_eq 'picker --list sorts same-rank rows by real age ascending' \
+  'agent-new,agent-old' "$out"
+
 reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
 TMUX_MOCK_LIST_PANES=$'work\t%1\tpi\t123\t/tmp/manual-proj'
@@ -302,6 +340,27 @@ TMUX_MOCK_LIST_PANES=$'work\t%1\tpi\t123\t/tmp/manual-proj'
 TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=done"$'\n'"%1|@agent_state_at=$picker_now"
 out="$(run_bash 'scripts/picker.sh --list')"
 assert_contains 'picker --list reads manual pane state and timestamp' "$out" $'pane\t%1\t🔵 done   \tmanual-proj\t0s'
+
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+TMUX_MOCK_LIST_PANES=$'work\t%1\tpi\t123\t/tmp/manual-proj'
+TMUX_MOCK_FAIL_TARGETS='%1'
+out="$(run_bash 'scripts/picker.sh --list' 2>/dev/null)"
+rc="$?"
+assert_eq 'picker --list fails on non-race manual pane option error' '1' "$rc"
+
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+TMUX_MOCK_LIST_PANES_PICKER=$'work\t%1\tpi\t123\t/tmp/manual-proj'
+TMUX_MOCK_LIST_PANES_STATUS=''
+TMUX_MOCK_FAIL_TARGETS='%1'
+out="$(run_bash 'scripts/picker.sh --list')"
+rc="$?"
+assert_eq 'picker --list skips manual pane closed during option query' '0' "$rc"
+assert_eq 'picker --list emits no stale row for closed manual pane' '' "$out"
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'picker --list validates closed pane without quiet target suppression' "$log_contents" $'show-options\t-p\t-t\t%1'
+assert_not_contains 'picker --list no longer uses quiet option query for race detection' "$log_contents" $'show-options\t-pq\t-t\t%1'
 
 # state.sh
 reset_mocks

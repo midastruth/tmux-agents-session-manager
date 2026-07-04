@@ -23,13 +23,15 @@ tmux set-option -gq @agent_status_script "$CURRENT_DIR/scripts/status.sh"
 # @agent_agents (pi/codex/claude...), otherwise it launches directly.
 # #{pane_current_path} / #{window_id} are expanded by run-shell before the args
 # reach the script.
+launch_menu_q=$(printf '%q' "$CURRENT_DIR/scripts/launch_menu.sh")
 tmux bind-key "$launch_key" \
-  run-shell "$CURRENT_DIR/scripts/launch_menu.sh '#{pane_current_path}' '#{window_id}'"
+  run-shell "$launch_menu_q '#{pane_current_path}' '#{window_id}'"
 
 # Open the session picker. When pressed from inside a session popup, list.sh
 # closes that popup first so the picker opens full-size on the outer client.
+list_q=$(printf '%q' "$CURRENT_DIR/scripts/list.sh")
 tmux bind-key "$list_key" \
-  run-shell "$CURRENT_DIR/scripts/list.sh '#{client_name}'"
+  run-shell "$list_q '#{client_name}'"
 
 # Optional: append a compact agent status summary to status-right.
 # Enabled by default; disable with `set -g @agent_status off`.
@@ -52,7 +54,8 @@ if [ "$status_enabled" = on ]; then
   # Otherwise:     expand the cached badge. Zero forks. When the cache is empty
   # (no reported agent states) nothing is printed, matching the documented
   # behavior; use #(status.sh --or-host) directly if you want a host fallback.
-  summary="#{?@agent_status_working,#($CURRENT_DIR/scripts/status.sh --animate),#{@agent_status_cache}}"
+  status_q=$(printf '%q' "$CURRENT_DIR/scripts/status.sh")
+  summary="#{?@agent_status_working,#($status_q --animate),#{@agent_status_cache}}"
   current_right="$(tmux show-option -gqv status-right)"
   # Avoid appending twice on plugin reload. Match either the new marker option
   # or a legacy raw #(status.sh) embed from an earlier version of this plugin.
@@ -66,5 +69,5 @@ if [ "$status_enabled" = on ]; then
   fi
   # Prime the cache once on load so the badge reflects current state before the
   # first agent event fires.
-  tmux run-shell -b "$CURRENT_DIR/scripts/status.sh --refresh"
+  tmux run-shell -b "$status_q --refresh"
 fi

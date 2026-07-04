@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,13 +9,18 @@ const DEFAULT_SESSION_PREFIX = "agent-";
 let tmuxSession: string | undefined;
 let sessionPrefix: string | undefined;
 
-// Absolute path to scripts/status.sh, resolved relative to this extension file
-// (extensions/ and scripts/ are siblings in the plugin checkout). Used to prime
-// the event-driven status badge after a state change instead of polling.
+// Absolute path to scripts/status.sh. Prefer the tmux option exported by the
+// plugin: it stays correct even when this extension is loaded through a symlink
+// under ~/.pi/agent/extensions. Fall back to the checkout-relative location for
+// direct `pi -e /path/to/extensions/tmux-state.ts` usage.
 function statusScriptPath(): string | undefined {
+  const configured = runTmux(["show-option", "-gqv", "@agent_status_script"]);
+  if (configured && existsSync(configured)) return configured;
+
   try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    return join(here, "..", "scripts", "status.sh");
+    const here = dirname(realpathSync(fileURLToPath(import.meta.url)));
+    const candidate = join(here, "..", "scripts", "status.sh");
+    return existsSync(candidate) ? candidate : undefined;
   } catch {
     return undefined;
   }
@@ -30,8 +36,15 @@ function statusScriptPath(): string | undefined {
 function triggerStatusRefresh() {
   const script = statusScriptPath();
   if (!script) return;
-  if (runTmux(["show-option", "-gqv", "@agent_status"]) !== "on") return;
-  runTmux(["run-shell", "-b", `${script} --refresh`]);
+  const status = runTmux(["show-option", "-gqv", "@agent_status"]);
+  // The badge defaults to on (agents_session_manager.tmux reads it with a
+  // default of 'on'), so skip only when explicitly disabled. Mirrors
+  // trigger_status_refresh() in scripts/helpers.sh.
+  if (status === "off") return;
+  // run-shell passes its argument to a shell: quote the script path so plugin
+  // installs under directories with spaces still work.
+  const quoted = `'${script.replace(/'/g, `'\\''`)}'`;
+  runTmux(["run-shell", "-b", `${quoted} --refresh`]);
 }
 
 function runTmux(args: string[]): string | undefined {

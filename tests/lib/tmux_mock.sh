@@ -19,6 +19,9 @@
 #   TMUX_MOCK_CURRENT_SESSION  session name for '#S' display-message formats
 #   TMUX_MOCK_PANE_SESSION     session name for '#{session_name}' formats
 #   TMUX_MOCK_PANE_VISIBLE     output for '#{session_attached}' formats
+#   TMUX_MOCK_FAIL_TARGETS     space-separated targets whose -t queries fail
+#   TMUX_MOCK_FAIL_REFRESH_CLIENT
+#                              non-empty makes refresh-client fail
 #
 # The ps mock is driven by:
 #   TMUX_MOCK_PS_CHILDREN      "ppid=pid pid..." lines
@@ -90,15 +93,29 @@ target_arg() {
   return 1
 }
 
+target_should_fail() {
+  local target="$1"
+  [ -n "$target" ] || return 1
+  case " ${TMUX_MOCK_FAIL_TARGETS:-} " in
+  *" $target "*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
 show_option() {
-  local opt target value x value_only=no
+  local opt target value x value_only=no quiet=no
   opt="$(last_arg "$@")"
   target="$(target_arg "$@" || true)"
   for x in "$@"; do
     case "$x" in
     -*v*) value_only=yes ;;
+    -*q*) quiet=yes ;;
     esac
   done
+  if target_should_fail "$target"; then
+    [ "$quiet" = yes ] && return 0
+    return 1
+  fi
   if [ -n "$target" ] && [[ "$opt" != @* ]]; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -124,7 +141,7 @@ show_option() {
 }
 
 run_group() {
-  local group_cmd="$1" joined
+  local group_cmd="$1" joined target
   shift || true
   case "$group_cmd" in
     show-option|show-options)
@@ -132,6 +149,10 @@ run_group() {
       ;;
     display-message)
       joined=" $* "
+      target="$(target_arg "$@" || true)"
+      if target_should_fail "$target"; then
+        return 1
+      fi
       if [[ "$joined" == *' -F '* ]]; then
         printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
       elif [[ "$joined" == *'#{session_attached}'* ]]; then
@@ -149,12 +170,12 @@ run_group() {
 
 run_chain() {
   local -a group=()
-  local arg first=yes
+  local arg first=yes status=0
   for arg in "$@"; do
     if [ "$arg" = ';' ]; then
       if [ "${#group[@]}" -gt 0 ]; then
         [ "$first" = no ] && printf '\n'
-        run_group "${group[@]}"
+        run_group "${group[@]}" || status=$?
         first=no
       fi
       group=()
@@ -164,7 +185,24 @@ run_chain() {
   done
   if [ "${#group[@]}" -gt 0 ]; then
     [ "$first" = no ] && printf '\n'
-    run_group "${group[@]}"
+    run_group "${group[@]}" || status=$?
+  fi
+  return "$status"
+}
+
+emit_list_panes() {
+  local data="$1" joined="$2" line f1 f2 rest
+  [ -n "$data" ] || return 0
+  if [[ "$joined" == *'#{pane_id}'* ]] &&
+    [[ "$joined" != *'#{session_name}'* ]] &&
+    [[ "$joined" != *pane_current_command* ]]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      IFS=$'\t' read -r f1 f2 rest <<< "$line"
+      printf '%s\n' "${f2:-$f1}"
+    done <<< "$data"
+  else
+    printf '%s\n' "$data"
   fi
 }
 
@@ -178,17 +216,18 @@ case "$cmd" in
     ;;
   list-sessions)
     [ -n "${TMUX_MOCK_LIST_SESSIONS:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_SESSIONS"
+    exit 0
     ;;
   list-panes)
     joined=" $* "
     if [ -n "${TMUX_MOCK_LIST_PANES_PICKER:-}" ] || [ -n "${TMUX_MOCK_LIST_PANES_STATUS:-}" ]; then
       if [[ "$joined" == *pane_current_command* ]]; then
-        [ -n "${TMUX_MOCK_LIST_PANES_PICKER:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_PANES_PICKER"
+        emit_list_panes "${TMUX_MOCK_LIST_PANES_PICKER:-}" "$joined"
       else
-        [ -n "${TMUX_MOCK_LIST_PANES_STATUS:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_PANES_STATUS"
+        emit_list_panes "${TMUX_MOCK_LIST_PANES_STATUS:-}" "$joined"
       fi
     else
-      [ -n "${TMUX_MOCK_LIST_PANES:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_PANES"
+      emit_list_panes "${TMUX_MOCK_LIST_PANES:-}" "$joined"
     fi
     ;;
   list-clients)
@@ -197,7 +236,10 @@ case "$cmd" in
   has-session)
     [ "${TMUX_MOCK_HAS_SESSION:-no}" = yes ]
     ;;
-  new-session|set-option|display-popup|kill-session|send-keys|attach-session|switch-client|detach-client|refresh-client)
+  refresh-client)
+    [ -z "${TMUX_MOCK_FAIL_REFRESH_CLIENT:-}" ]
+    ;;
+  new-session|set-option|display-popup|kill-session|send-keys|attach-session|switch-client|detach-client)
     exit 0
     ;;
   run-shell)
