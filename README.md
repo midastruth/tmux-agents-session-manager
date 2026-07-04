@@ -326,6 +326,55 @@ put the script in the slot that would otherwise show the host:
 set -g status-right "#[fg=#586e75,bg=#292a30,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#586e75]#[fg=#657b83,bg=#586e75,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#657b83]#[fg=#93a1a1,bg=#657b83,nobold,nounderscore,noitalics]#[fg=#15161E,bg=#93a1a1,bold] #{?@agent_status_script,#(#{@agent_status_script} --or-host),#h} "
 ```
 
+That Powerline example uses `#(... --or-host)`, which **forks the script once
+per `status-interval`** even when nothing is happening. For a zero-fork,
+event-driven segment, replace the badge slot with the same cached/animated
+expression the plugin injects by default:
+
+```tmux
+set -g status-right "#[fg=#586e75,bg=#292a30,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#586e75]#[fg=#657b83,bg=#586e75,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#657b83]#[fg=#93a1a1,bg=#657b83,nobold,nounderscore,noitalics]#[fg=#15161E,bg=#93a1a1,bold] #{?@agent_status_working,#(#{@agent_status_script} --animate),#{?@agent_status_cache,#{@agent_status_cache},#h}} "
+```
+
+How this segment behaves:
+
+- **Working:** `@agent_status_working` is set, so tmux forks
+  `status.sh --animate` once per `status-interval` to advance the spinner.
+- **Idle / done:** tmux expands the cached `@agent_status_cache` string with
+  **zero forks** (agents refresh it via `status.sh --refresh` only on state
+  changes).
+- **No agents:** the cache is empty, so the nested `#{?@agent_status_cache,...}`
+  falls back to `#h` (the short hostname). Use `#h` here rather than
+  `--or-host`, because tmux *does* expand `#h` in a plain format string (the
+  `--or-host` flag only exists for the `#(...)` case, where `#h` is passed
+  through literally).
+
+> **Note the `@` prefixes.** The option names are `@agent_status_working`,
+> `@agent_status_cache`, and `@agent_status_script`. Dropping the `@` silently
+> breaks the condition (it can never be true) **and** defeats the auto-inject
+> guard below, producing a duplicate badge.
+
+### Manual placement auto-detects and skips auto-injection
+
+You do **not** have to set `@agent_status off` when you place the badge
+yourself. On load, the plugin only prepends its summary to `status-right` when
+that string does **not** already reference the status feature. It checks for
+either marker:
+
+```sh
+case "$current_right" in
+*"@agent_status_working"*|*".../scripts/status.sh"*) : ;;   # already present → skip
+*) tmux set-option -g status-right "$summary $current_right" ;;
+esac
+```
+
+So as long as your manual `status-right` contains `@agent_status_working` (or a
+literal path to `scripts/status.sh`), the plugin detects it and does **not**
+append a second badge — even with `@agent_status on` (the default). It still
+sets `@agent_status_script`, primes the cache once, and may tighten
+`status-interval` down to `@agent_status_interval` so the spinner animates
+smoothly. If you prefer the plugin to touch nothing but the script path and
+cache, set `@agent_status off` explicitly before it loads.
+
 The actual default for `@agent_default_command` is equivalent to:
 
 ```tmux

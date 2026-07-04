@@ -522,5 +522,57 @@ log_contents="$(<"$TMUX_LOG")"
 assert_contains 'launch.sh reports unknown named agent' "$log_contents" $'display-message\tUnknown agent: nope'
 assert_not_contains 'launch.sh does not open popup for unknown agent' "$log_contents" $'display-popup'
 
+# agents_session_manager.tmux status-right auto-injection guard
+# The entrypoint is an executable bash script (tpm runs it directly), not a
+# sourced library, so invoke it with `bash <file>` rather than run_bash's
+# `. scripts/...` style. It reads the current status-right via `show-option
+# -gqv status-right`; the mock serves that from TMUX_MOCK_OPTIONS.
+run_entrypoint() {
+  (cd "$ROOT" && bash agents_session_manager.tmux)
+}
+
+# When status-right already references @agent_status_working, the plugin must
+# detect its own marker and NOT append a second badge (the exact duplicate-badge
+# bug that a missing '@' on the option name would reintroduce).
+reset_mocks
+TMUX_MOCK_OPTIONS=$'status-right=pre #{?@agent_status_working,#(x --animate),#{@agent_status_cache}} post'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'entrypoint skips injection when @agent_status_working marker present' \
+  "$log_contents" $'set-option\t-g\tstatus-right'
+
+# When status-right embeds a literal path to scripts/status.sh (a legacy raw
+# embed from an older plugin version), the guard must also skip.
+reset_mocks
+TMUX_MOCK_OPTIONS="status-right=x #($ROOT/scripts/status.sh --or-host) y"
+export TMUX_MOCK_OPTIONS
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'entrypoint skips injection when literal status.sh path present' \
+  "$log_contents" $'set-option\t-g\tstatus-right'
+
+# A plain status-right with no marker must get the cached/animated summary
+# prepended exactly once, preserving the user's existing content.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+injected_count="$(grep -c $'set-option\t-g\tstatus-right' "$TMUX_LOG")"
+assert_eq 'entrypoint injects status-right exactly once when no marker present' \
+  '1' "$injected_count"
+assert_contains 'entrypoint prepends the event-driven summary marker' \
+  "$log_contents" $'set-option\t-g\tstatus-right\t#{?@agent_status_working,'
+assert_contains 'entrypoint preserves existing status-right content' \
+  "$log_contents" $'#{@agent_status_cache}} %H:%M'
+
+# With @agent_status off, the plugin must not touch status-right at all, even
+# when there is no marker present.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_status=off\nstatus-right=%H:%M'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'entrypoint leaves status-right untouched when @agent_status off' \
+  "$log_contents" $'set-option\t-g\tstatus-right'
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
