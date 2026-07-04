@@ -131,15 +131,13 @@ The extension writes these tmux options on the nested Pi session:
 | `agent_end`        | `done`\*   | The turn finished and has not been opened yet |
 | `session_shutdown` | `idle`     | Pi is shutting down  |
 
-\* For **managed sessions only** (session name carries the
-`@agent_session_prefix`): if the session has an attached client and the pane
-is the active pane of the active window when the turn ends, `agent_end`
-reports `idle` directly instead of `done` — you were already watching it
-finish in the popup, so there is nothing left to "discover" later and the
-badge does not get stuck showing `done`. tmux can only detect client
-attachment (not terminal focus), which is a reliable signal inside the
-managed popup flow because closing the popup detaches its client. Manual
-panes in an always-attached outer session always report `done`.
+\* If the pane is already visible when the turn ends (its session is attached,
+its window is active, and it is the active pane), `agent_end` reports `idle`
+directly instead of `done` — you were already watching it finish, so there is
+nothing left to "discover" later and the right status bar does not get stuck
+showing `done` for the current session/pane. tmux can only detect client
+attachment, not terminal focus, so a pane in an attached-but-unfocused terminal
+may also be treated as seen.
 
 Opening a `done` session from the picker or launcher marks it `idle` again.
 
@@ -190,13 +188,11 @@ timeout = 1
 This gives Codex the animated `working` badge on turn start (the old `notify`
 hook could only report `done`).
 
-`state.sh` applies the same "skip `done` when the managed session is being
-watched" shortcut as the bundled Pi extension: when the `Stop` hook fires while
-you are actively watching the managed session's pane (its session is attached
-and this is the active pane in the active window), the recorded state is
-downgraded from `done` to `idle` so the badge does not get stuck. Manual panes
-(non-managed sessions) never take this shortcut and always record `done`, since
-client attachment is not a reliable "watching" signal outside the popup flow.
+`state.sh` applies the same "skip `done` when the pane is being watched"
+shortcut as the bundled Pi extension: when the `Stop` hook fires while the pane
+is visible (its session is attached and this is the active pane in the active
+window), the recorded state is downgraded from `done` to `idle` so the status
+bar does not get stuck showing `done` for the current session/pane.
 
 ## Status line summary
 

@@ -75,31 +75,20 @@ function managedSessionPrefix(): string {
   return sessionPrefix;
 }
 
-// isWatchedManagedPane reports whether TMUX_PANE belongs to a managed agent
-// session (session name carries the configured prefix) that a client is
-// currently looking at: the session has an attached client, this pane's window
-// is the active window, and this pane is the active pane in it.
-//
-// tmux can only detect client attachment, not terminal focus, so the check is
-// deliberately restricted to managed sessions: those live inside the plugin's
-// popup, and closing the popup detaches the client, which makes
-// session_attached a reliable "being watched" signal there. For manual panes
-// in an always-attached outer session the same signal would be meaningless
-// (terminal minimized, popup covering the pane, forgotten second client), so
-// they never take this shortcut.
+// isWatchedAgentPane reports whether TMUX_PANE is currently visible to a tmux
+// client: the session has an attached client, this pane's window is the active
+// window, and this pane is the active pane in it.
 //
 // Used to avoid flashing "done" (finished, unseen) when the user is already
-// watching the session finish in real time — there is nothing to "see" later,
-// so it should read "idle" immediately instead of getting stuck on "done"
-// until the session is closed and reopened via the picker/launcher.
+// watching the turn finish in real time — there is nothing to "see" later, so
+// it should read "idle" immediately instead of getting stuck on "done" in the
+// right status bar for the current session/pane.
 //
-// NOTE: scripts/helpers.sh mirrors this in Bash as is_watched_managed_pane()
+// NOTE: scripts/helpers.sh mirrors this in Bash as is_watched_agent_pane()
 // (with is_pane_visible()), used by scripts/state.sh so agents wired through
 // hooks (e.g. Codex's Stop hook) get the same "skip done when watched" shortcut.
 // Keep the two implementations in sync when changing this logic.
-function isWatchedManagedPane(): boolean {
-  const session = currentTmuxSession();
-  if (!session || !session.startsWith(managedSessionPrefix())) return false;
+function isWatchedAgentPane(): boolean {
   return isPaneVisible();
 }
 
@@ -143,6 +132,9 @@ function setState(state: "blocked" | "working" | "done" | "idle") {
   if (session && session.startsWith(managedSessionPrefix())) {
     addTmuxCommand(["set-option", "-t", session, "@agent_state", state]);
     addTmuxCommand(["set-option", "-t", session, "@agent_state_at", now]);
+    if (pane) {
+      addTmuxCommand(["set-option", "-t", session, "@agent_pane", pane]);
+    }
   }
 
   if (args.length > 0) {
@@ -163,12 +155,10 @@ export default function piTmuxStateExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async () => {
-    // If the user is actively watching this managed session's pane right now,
-    // there is nothing left to "discover" later — go straight to idle instead
-    // of done, so the badge does not get stuck showing done while attached.
-    // Manual panes always report done (attachment is not a reliable
-    // "watching" signal outside the managed popup flow).
-    setState(isWatchedManagedPane() ? "idle" : "done");
+    // If the user is actively watching this pane right now, there is nothing
+    // left to "discover" later — go straight to idle instead of done, so the
+    // badge does not get stuck showing done for the current session/pane.
+    setState(isWatchedAgentPane() ? "idle" : "done");
   });
 
   pi.on("session_shutdown", async () => {

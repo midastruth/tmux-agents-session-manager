@@ -147,14 +147,61 @@ compute_summary() {
     total=$((total + 1))
   }
 
+  pane_target_is_visible() {
+    local target="$1" out attached window_active pane_active
+    [ -n "$target" ] || return 1
+    out="$(tmux display-message -p -t "$target" '#{session_attached} #{window_active} #{pane_active}' 2>/dev/null)" || return 1
+    read -r attached window_active pane_active <<EOF
+$out
+EOF
+    [ "${attached:-0}" != 0 ] && [ "${window_active:-0}" = 1 ] && [ "${pane_active:-0}" = 1 ]
+  }
+
+  managed_done_is_visible() {
+    local session="$1" agent_pane="$2" panes pane pane_count=0 only_pane='' pane_state
+
+    # Prefer the pane that last reported session state. This avoids the old
+    # coarse session_attached check, which hid unseen completions when some
+    # other window/pane in the same managed session was active.
+    if [ -n "$agent_pane" ]; then
+      pane_target_is_visible "$agent_pane"
+      return $?
+    fi
+
+    # Older sessions may not have @agent_pane. If a pane-scoped "done" exists,
+    # only hide it when that exact pane is visible. As a compatibility fallback,
+    # a single-pane managed session can safely treat that sole pane as the agent
+    # pane; multi-pane sessions without pane identity keep showing "done".
+    panes="$(tmux list-panes -s -t "$session" -F '#{pane_id}' 2>/dev/null)" || return 1
+    while IFS= read -r pane; do
+      [ -n "$pane" ] || continue
+      pane_count=$((pane_count + 1))
+      only_pane="$pane"
+      if ! pane_state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null)"; then
+        continue
+      fi
+      if [ "$pane_state" = done ] && pane_target_is_visible "$pane"; then
+        return 0
+      fi
+    done <<< "$panes"
+
+    [ "$pane_count" -eq 1 ] && pane_target_is_visible "$only_pane"
+  }
+
   # Managed sessions (session-scoped @agent_state). Read state in the list call
-  # to avoid one extra tmux process per session on every status refresh.
-  local s state at session_rows
-  session_rows="$(tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}' 2>/dev/null)" || return 1
-  while IFS=$'\t' read -r s state at; do
+  # to avoid one extra tmux process per session on every status refresh. If a
+  # stale "done" belongs to the visible agent pane, treat it as already seen so
+  # the current popup/session does not keep showing a done badge.
+  local s state at agent_pane session_rows row_sep
+  row_sep=$'\037'
+  session_rows="$(tmux list-sessions -F "#{session_name}${row_sep}#{@agent_state}${row_sep}#{@agent_state_at}${row_sep}#{@agent_pane}" 2>/dev/null)" || return 1
+  while IFS="$row_sep" read -r s state at agent_pane; do
     [ -z "$s" ] && continue
     is_managed_session "$s" || continue
     [ -n "$state" ] || continue
+    if [ "$state" = done ] && managed_done_is_visible "$s" "$agent_pane"; then
+      state=idle
+    fi
     count_state "$state" "$at"
   done <<< "$session_rows"
 
@@ -199,7 +246,7 @@ compute_summary() {
         if [ "${#pane_state_cmd[@]}" -gt 1 ]; then
           pane_state_cmd+=(\;)
         fi
-        pane_state_cmd+=(display-message -p -t "$pane" "__agent_pane__ $pane")
+        pane_state_cmd+=(display-message -p -t "$pane" "__agent_pane__ $pane #{session_attached} #{window_active} #{pane_active}")
         pane_state_cmd+=(\; show-options -pq -t "$pane")
       done
       if pane_states="$("${pane_state_cmd[@]}" 2>/dev/null)"; then
@@ -230,10 +277,13 @@ compute_summary() {
     local pane_states
     pane_states="$(query_manual_pane_states)" || return 1
 
-    local current_pane='' pane_state='' pane_at='' line
+    local current_pane='' pane_state='' pane_at='' pane_visible=0 line
     flush_pane_state() {
       [ -n "$current_pane" ] || return 0
       [ -n "$pane_state" ] || return 0
+      if [ "$pane_state" = done ] && [ "$pane_visible" = 1 ]; then
+        pane_state=idle
+      fi
       count_state "$pane_state" "$pane_at"
     }
 
@@ -241,7 +291,11 @@ compute_summary() {
       case "$line" in
       "__agent_pane__ "*)
         flush_pane_state
-        current_pane="${line#__agent_pane__ }"
+        read -r _marker current_pane attached window_active pane_active <<< "$line"
+        pane_visible=0
+        if [ "${attached:-0}" != 0 ] && [ "${window_active:-0}" = 1 ] && [ "${pane_active:-0}" = 1 ]; then
+          pane_visible=1
+        fi
         pane_state=''
         pane_at=''
         ;;

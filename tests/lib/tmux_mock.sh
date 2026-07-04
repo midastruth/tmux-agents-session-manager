@@ -155,6 +155,8 @@ run_group() {
       fi
       if [[ "$joined" == *' -F '* ]]; then
         printf '%s' "${TMUX_MOCK_STATUS_OPTIONS:-}"
+      elif [[ "$joined" == *'__agent_pane__ '* && "$joined" == *'#{session_attached}'* ]]; then
+        printf '__agent_pane__ %s %s' "${target:-}" "${TMUX_MOCK_PANE_VISIBLE:-0 0 0}"
       elif [[ "$joined" == *'#{session_attached}'* ]]; then
         printf '%s' "${TMUX_MOCK_PANE_VISIBLE:-0 0 0}"
       elif [[ "$joined" == *'#{session_name}'* ]]; then
@@ -215,7 +217,13 @@ case "$cmd" in
     run_chain "$cmd" "$@"
     ;;
   list-sessions)
-    [ -n "${TMUX_MOCK_LIST_SESSIONS:-}" ] && printf '%s\n' "$TMUX_MOCK_LIST_SESSIONS"
+    if [ -n "${TMUX_MOCK_LIST_SESSIONS:-}" ]; then
+      if [[ " $* " == *$'\037'* ]]; then
+        printf '%s\n' "$TMUX_MOCK_LIST_SESSIONS" | tr '\t' '\037'
+      else
+        printf '%s\n' "$TMUX_MOCK_LIST_SESSIONS"
+      fi
+    fi
     exit 0
     ;;
   list-panes)

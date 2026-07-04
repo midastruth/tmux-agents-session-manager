@@ -63,8 +63,8 @@ is_managed_session() {
 # is_pane_visible <pane>
 # Succeeds when a client is currently looking at <pane>: its session is
 # attached, its window is the active window, and it is the active pane there.
-# tmux can only detect client attachment, not terminal focus, so callers should
-# restrict this to managed sessions (see is_watched_managed_pane).
+# tmux can only detect client attachment, not terminal focus, so an attached but
+# unfocused terminal can still count as visible.
 is_pane_visible() {
   local pane="$1" out attached win_active pane_active
   [ -n "$pane" ] || return 1
@@ -77,13 +77,17 @@ EOF
   [ "$attached" != 0 ] && [ "$win_active" = 1 ] && [ "$pane_active" = 1 ]
 }
 
-# is_watched_managed_pane <pane>
-# Succeeds when <pane> belongs to a managed agent session that a client is
-# currently watching. Mirrors isWatchedManagedPane() in
-# extensions/tmux-state.ts: managed sessions live inside the plugin popup, so
-# closing the popup detaches the client, which makes session_attached a reliable
-# "being watched" signal. Used to skip a stale "done" badge when the user
-# watched the turn finish. Keep the two implementations in sync.
+# is_watched_agent_pane <pane>
+# Succeeds when tmux reports that <pane> is currently visible: its session is
+# attached, its window is active, and it is the active pane. Used to skip a stale
+# "done" badge when the user watched the turn finish in the current pane.
+# Mirrors isWatchedAgentPane() in extensions/tmux-state.ts.
+is_watched_agent_pane() {
+  is_pane_visible "$1"
+}
+
+# Backwards-compatible managed-only helper kept for external scripts that may
+# have sourced helpers.sh directly. New code should use is_watched_agent_pane().
 is_watched_managed_pane() {
   local pane="$1" session
   [ -n "$pane" ] || return 1

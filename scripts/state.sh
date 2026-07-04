@@ -21,13 +21,12 @@ blocked|working|done|idle) ;;
 *) exit 0 ;;
 esac
 
-# If the user is actively watching this managed session's pane right now, there
-# is nothing left to "discover" later, so downgrade "done" to "idle" instead of
-# leaving a stale badge until the session is reopened. This mirrors the bundled
-# Pi extension's agent_end shortcut, so agents wired through hooks (e.g. Codex's
-# Stop hook running state.sh done) behave like pi. Manual panes never take this
-# shortcut (see is_watched_managed_pane).
-if [ "$state" = "done" ] && is_watched_managed_pane "$TMUX_PANE"; then
+# If the user is actively watching this pane right now, there is nothing left to
+# "discover" later, so downgrade "done" to "idle" instead of leaving a stale
+# badge in the right status bar for the current session/pane. This mirrors the
+# bundled Pi extension's agent_end shortcut, so agents wired through hooks (e.g.
+# Codex's Stop hook running state.sh done) behave like pi.
+if [ "$state" = "done" ] && is_watched_agent_pane "$TMUX_PANE"; then
   state=idle
 fi
 
@@ -45,6 +44,7 @@ if [ -n "$session" ] && is_managed_session "$session"; then
   args+=(
     \; set-option -t "$session" @agent_state "$state"
     \; set-option -t "$session" @agent_state_at "$now"
+    \; set-option -t "$session" @agent_pane "$TMUX_PANE"
   )
 fi
 

@@ -220,6 +220,28 @@ out="$(run_bash 'scripts/status.sh')"
 assert_eq 'status.sh keeps stale done state visible' 'agents 1✓' "$out"
 
 reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off)"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tdone\t123\t%1'
+TMUX_MOCK_PANE_VISIBLE='1 0 1'
+out="$(run_bash 'scripts/status.sh')"
+assert_eq 'status.sh keeps done for attached but inactive managed pane' 'agents 1✓' "$out"
+
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off)"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tdone\t123\t%1'
+TMUX_MOCK_PANE_VISIBLE='1 1 1'
+out="$(run_bash 'scripts/status.sh --or fallback')"
+assert_eq 'status.sh hides done for visible managed pane' 'fallback' "$out"
+
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off)"
+TMUX_MOCK_LIST_PANES=$'work\t%1'
+TMUX_MOCK_TARGET_OPTIONS=$'%1|@agent_state=done'
+TMUX_MOCK_PANE_VISIBLE='1 1 1'
+out="$(run_bash 'scripts/status.sh --or fallback')"
+assert_eq 'status.sh hides done for visible manual pane' 'fallback' "$out"
+
+reset_mocks
 TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 0)"
 TMUX_MOCK_LIST_PANES=$'work\t%1'
 TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=working"$'\n'"%1|@agent_state_at=$stale_at"
@@ -433,7 +455,8 @@ TMUX_MOCK_PANE_VISIBLE='1 1 1'
 export TMUX_PANE TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE
 run_bash 'scripts/state.sh done' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'state.sh keeps done on watched manual pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
+assert_contains 'state.sh downgrades done to idle on watched manual pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tidle'
+assert_not_contains 'state.sh does not record done on watched manual pane' "$log_contents" $'@agent_state\tdone'
 
 reset_mocks
 TMUX_PANE='%1'
