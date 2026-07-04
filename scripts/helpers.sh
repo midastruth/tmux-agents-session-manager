@@ -74,7 +74,7 @@ mark_managed_session_seen_if_done() {
   now="$(date +%s)"
   args=()
 
-  if [ "$session_state" = done ]; then
+  if [ "$session_state" = "done" ]; then
     args+=(
       set-option -t "$session" @agent_state idle
       \; set-option -t "$session" @agent_state_at "$now"
@@ -84,7 +84,7 @@ mark_managed_session_seen_if_done() {
   while IFS= read -r pane; do
     [ -n "$pane" ] || continue
     pane_state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
-    [ "$pane_state" = done ] || continue
+    [ "$pane_state" = "done" ] || continue
     if [ "${#args[@]}" -gt 0 ]; then
       args+=(\;)
     fi
@@ -102,7 +102,7 @@ mark_managed_session_seen_if_done() {
 mark_pane_seen_if_done() {
   local pane="$1" state now
   state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
-  [ "$state" = done ] || return 0
+  [ "$state" = "done" ] || return 0
   now="$(date +%s)"
   tmux set-option -p -t "$pane" @agent_state idle \
     \; set-option -p -t "$pane" @agent_state_at "$now" 2>/dev/null || true

@@ -18,6 +18,7 @@ AGENT_DETECT_WRAPPERS="$(wrapper_commands)"
 export AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS
 
 short_path() {
+  # shellcheck disable=SC2088 # literal ~ is intentional for display
   case "$1" in
   "$HOME")   printf '~' ;;
   "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;;

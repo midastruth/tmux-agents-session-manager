@@ -11,6 +11,7 @@
 if [ -z "${AGENT_MENU_REEXEC:-}" ] && [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
   for _bash in /opt/homebrew/bin/bash /usr/local/bin/bash bash; do
     _bin="$(command -v "$_bash" 2>/dev/null)" || continue
+    # shellcheck disable=SC2016 # expansion must happen in the re-exec'd bash
     _ver="$("$_bin" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)"
     if [ "${_ver:-0}" -ge 4 ] 2>/dev/null; then
       export AGENT_MENU_REEXEC=1

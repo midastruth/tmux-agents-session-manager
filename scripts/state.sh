@@ -27,7 +27,7 @@ esac
 # Pi extension's agent_end shortcut, so agents wired through hooks (e.g. Codex's
 # Stop hook running state.sh done) behave like pi. Manual panes never take this
 # shortcut (see is_watched_managed_pane).
-if [ "$state" = done ] && is_watched_managed_pane "$TMUX_PANE"; then
+if [ "$state" = "done" ] && is_watched_managed_pane "$TMUX_PANE"; then
   state=idle
 fi
 
