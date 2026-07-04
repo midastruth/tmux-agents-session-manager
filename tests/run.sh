@@ -36,7 +36,8 @@ reset_mocks() {
     TMUX_MOCK_HAS_SESSION TMUX_MOCK_CURRENT_SESSION TMUX_MOCK_PANE_SESSION \
     TMUX_MOCK_PANE_VISIBLE \
     TMUX_MOCK_PS_CHILDREN TMUX_MOCK_PS_COMM \
-    AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS TMUX_PANE
+    AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS TMUX_PANE \
+    PICKER_NOW
 }
 
 pass() {
@@ -257,7 +258,11 @@ assert_contains 'status.sh --animate also caches the summary' "$log_contents" $'
 reset_mocks
 picker_home="$HOME"
 TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+# Pin now via PICKER_NOW so picker.sh uses the same instant we stamp into the
+# mock rows; reading the clock twice would race a one-second boundary and make
+# the rendered age (0s) flaky.
 picker_now="$(date +%s)"
+PICKER_NOW="$picker_now"
 TMUX_MOCK_LIST_SESSIONS="agent-pi	blocked	${picker_now}	${picker_home}/proj	pi	pi
 other	done	${picker_now}	/tmp/x		bash"
 out="$(run_bash 'scripts/picker.sh --list')"
@@ -269,6 +274,7 @@ assert_not_contains 'picker --list ignores unmanaged sessions' "$out" $'session\
 reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
 now_ts="$(date +%s)"
+PICKER_NOW="$now_ts"
 TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$((now_ts - 45))	/tmp/a	pi	pi
 agent-b	blocked	$((now_ts - 720))	/tmp/b	pi	pi
 agent-c	blocked	$((now_ts - 10800))	/tmp/c	pi	pi
@@ -287,6 +293,10 @@ assert_contains 'picker --list emits manual pane row' "$out" $'pane\t%1\t🟣 ma
 assert_contains 'picker --list describes manual pane agent' "$out" $'/tmp/manual-proj\tpane running pi\tpi'
 
 reset_mocks
+# Pin now so picker.sh and the stamped @agent_state_at agree exactly, keeping
+# the rendered age deterministic at 0s.
+picker_now="$(date +%s)"
+PICKER_NOW="$picker_now"
 TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
 TMUX_MOCK_LIST_PANES=$'work\t%1\tpi\t123\t/tmp/manual-proj'
 TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=done"$'\n'"%1|@agent_state_at=$picker_now"
@@ -305,12 +315,26 @@ assert_contains 'state.sh writes pane scoped state' "$log_contents" $'set-option
 assert_contains 'state.sh writes session scoped state for managed sessions' "$log_contents" $'set-option\t-t\tagent-a\t@agent_state\tdone'
 assert_contains 'state.sh triggers an event-driven status refresh' "$log_contents" $'run-shell\t-b'
 
-# state.sh must NOT fork a status refresh when the badge is disabled
-# (@agent_status unset/off): users who never enabled the badge pay nothing.
+# state.sh must fork a status refresh when @agent_status is unset/empty, because
+# the badge is enabled by default (agents_session_manager.tmux reads it with a
+# default of 'on'). A stale cache would otherwise freeze until the next event.
 reset_mocks
 TMUX_PANE='%1'
 TMUX_MOCK_PANE_SESSION='agent-a'
 export TMUX_PANE TMUX_MOCK_PANE_SESSION
+run_bash 'scripts/state.sh done' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'state.sh refreshes status when badge defaults to on' "$log_contents" $'run-shell\t-b'
+
+# state.sh must NOT fork a status refresh when the badge is explicitly disabled
+# (@agent_status=off): users who turned the badge off pay nothing. Note an
+# unset/empty @agent_status defaults to on (see agents_session_manager.tmux),
+# so disabling requires the explicit 'off' value.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_status=off'
+TMUX_PANE='%1'
+TMUX_MOCK_PANE_SESSION='agent-a'
+export TMUX_MOCK_OPTIONS TMUX_PANE TMUX_MOCK_PANE_SESSION
 run_bash 'scripts/state.sh done' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'state.sh still writes state when badge disabled' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'

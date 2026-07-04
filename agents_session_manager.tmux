@@ -32,7 +32,7 @@ tmux bind-key "$list_key" \
   run-shell "$CURRENT_DIR/scripts/list.sh '#{client_name}'"
 
 # Optional: append a compact agent status summary to status-right.
-# Enable with `set -g @agent_status on`.
+# Enabled by default; disable with `set -g @agent_status off`.
 #
 # Event-driven, not polled. The badge normally comes from the cached
 # @agent_status_cache option, which tmux expands with zero forks. Agents refresh
@@ -45,7 +45,7 @@ tmux bind-key "$list_key" \
 #
 # @agent_status_interval still bounds how often the spinner advances while
 # working; it no longer sets a permanent polling cost for idle/done states.
-status_enabled="$(get_tmux_option @agent_status 'off')"
+status_enabled="$(get_tmux_option @agent_status 'on')"
 if [ "$status_enabled" = on ]; then
   status_interval="$(get_tmux_option @agent_status_interval '1')"
   # While working: fork status.sh --animate to advance the spinner.

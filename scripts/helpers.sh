@@ -26,7 +26,9 @@ trigger_status_refresh() {
   [ -x "$dir/status.sh" ] || return 0
   # Only refresh when the auto-injected badge is enabled; otherwise the cache is
   # unused and the refresh (plus its refresh-client -S redraw) is pure overhead.
-  [ "$(tmux show-option -gqv @agent_status 2>/dev/null)" = on ] || return 0
+  # Match agents_session_manager.tmux, which enables the badge by default: treat
+  # an unset/empty @agent_status as 'on' and skip only when explicitly 'off'.
+  [ "$(get_tmux_option @agent_status 'on')" = on ] || return 0
   tmux run-shell -b "$dir/status.sh --refresh" 2>/dev/null || true
 }
 

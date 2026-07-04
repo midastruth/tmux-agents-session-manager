@@ -39,6 +39,18 @@ classify() {
   esac
 }
 
+# picker_now -> current epoch seconds. Honors PICKER_NOW when set to a numeric
+# value so tests can pin "now" and avoid a race: picker.sh would otherwise read
+# the clock again after the test captured its own timestamp, drifting the
+# rendered age across a one-second boundary. Not for production use.
+picker_now() {
+  if [[ "${PICKER_NOW:-}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$PICKER_NOW"
+  else
+    date +%s
+  fi
+}
+
 # humanize_ago <epoch-seconds> <now> -> compact age like 45s / 12m / 3h / 2d.
 # Falls back to '-' when the timestamp is missing or non-numeric.
 humanize_ago() {
@@ -69,7 +81,7 @@ split_classify() {
 
 emit_managed_rows() {
   local now s state at path cmd tool name rank label desc ago
-  now=$(date +%s)
+  now=$(picker_now)
   tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}	#{pane_current_path}	#{@agent_tool}	#{pane_current_command}' 2>/dev/null |
     while IFS=$'\t' read -r s state at path tool cmd; do
       is_managed_session "$s" || continue
@@ -86,7 +98,7 @@ emit_managed_rows() {
 
 emit_manual_rows() {
   local now panes s pane cmd ppid path state at opts line base name rank label desc ago
-  now=$(date +%s)
+  now=$(picker_now)
   panes="$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null)" || return 0
 
   # Snapshot ps at most once, and only when at least one non-managed pane is
