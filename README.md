@@ -211,12 +211,24 @@ Enable auto-injection into `status-right`:
 set -g @agent_status on
 ```
 
-This appends `#(.../scripts/status.sh)` to `status-right` and tightens
-`status-interval` so it refreshes promptly. Output looks like:
+Output looks like:
 
 ```
 agents 1● 2✦ 1✓
 ```
+
+**Event-driven, not polled.** The badge is served from a cached tmux option
+(`@agent_status_cache`) that agents update only when their state changes, so an
+idle or finished workspace costs **zero** background CPU — tmux just expands the
+cached string. The one exception is the spinner: while any agent is `working`,
+tmux runs the summary once per interval to advance the animation frame, then
+stops forking entirely as soon as work drops to zero. (tmux lazily evaluates
+only the selected branch of its `#{?...}` format, so the polling branch is never
+run while idle.)
+
+Agents refresh the cache by calling `scripts/status.sh --refresh` when they
+report a state — the bundled Pi extension and `scripts/state.sh` both do this
+automatically, so custom hook-based integrations get it for free.
 
 | Segment | State     | Meaning                |
 | ------- | --------- | ---------------------- |
@@ -227,7 +239,8 @@ agents 1● 2✦ 1✓
 
 Only non-zero groups appear, and nothing is printed when there are no reported
 agent states. Prefer to place it yourself? Skip `@agent_status` and embed the
-script directly:
+script directly. Note that a raw embed polls once per `status-interval` (it does
+not use the cached, event-driven path):
 
 ```tmux
 set -g status-right '#(~/clone/path/tmux-agents-session-manager/scripts/status.sh) %H:%M'

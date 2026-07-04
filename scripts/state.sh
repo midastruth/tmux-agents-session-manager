@@ -49,4 +49,8 @@ if [ -n "$session" ] && is_managed_session "$session"; then
 fi
 
 tmux "${args[@]}" 2>/dev/null
+
+# Update the event-driven status badge now that state changed, so the cached
+# summary (and the working spinner flag) reflect this report without polling.
+trigger_status_refresh "$DIR"
 exit 0

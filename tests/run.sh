@@ -214,6 +214,45 @@ TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=working"$'\n'"%1|@agent_state_at=$stal
 out="$(run_bash 'scripts/status.sh')"
 assert_eq 'status.sh can disable state expiry' 'agents 1✦' "$out"
 
+# status.sh --refresh: caches the summary, sets the working flag, no stdout.
+# Animation must be on for the working flag (the spinner poll trigger) to be set.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- on)"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tworking\nagent-b\tdone'
+out="$(run_bash 'scripts/status.sh --refresh')"
+assert_eq 'status.sh --refresh prints nothing' '' "$out"
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh --refresh caches the summary' "$log_contents" $'set-option\t-g\t@agent_status_cache\tagents 1'
+assert_contains 'status.sh --refresh sets working flag when working' "$log_contents" $'set-option\t-g\t@agent_status_working\t1'
+assert_contains 'status.sh --refresh forces a client redraw' "$log_contents" $'refresh-client\t-S'
+
+# status.sh --refresh: animation off -> no spinner needed, so the working flag
+# stays cleared even while working (the cache alone drives the badge).
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tworking'
+run_bash 'scripts/status.sh --refresh' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh --refresh leaves flag clear when animation off' "$log_contents" $'set-option\t-g\t@agent_status_working\t\n'
+
+# status.sh --refresh: no working agents -> working flag cleared to empty, so
+# tmux stops forking the animate branch entirely.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tdone\nagent-b\tidle'
+run_bash 'scripts/status.sh --refresh' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh --refresh clears working flag when idle' "$log_contents" $'set-option\t-g\t@agent_status_working\t\n'
+
+# status.sh --animate: prints the summary AND caches it (drives the spinner).
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tworking'
+out="$(run_bash 'scripts/status.sh --animate')"
+assert_eq 'status.sh --animate prints the summary' 'agents 1✦' "$out"
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh --animate also caches the summary' "$log_contents" $'set-option\t-g\t@agent_status_cache\tagents 1✦'
+
 # picker.sh --list
 reset_mocks
 picker_home="$HOME"
@@ -263,6 +302,7 @@ run_bash 'scripts/state.sh done' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'state.sh writes pane scoped state' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tdone'
 assert_contains 'state.sh writes session scoped state for managed sessions' "$log_contents" $'set-option\t-t\tagent-a\t@agent_state\tdone'
+assert_contains 'state.sh triggers an event-driven status refresh' "$log_contents" $'run-shell\t-b'
 
 reset_mocks
 TMUX_PANE='%1'

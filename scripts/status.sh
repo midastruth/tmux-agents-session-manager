@@ -9,6 +9,22 @@
 #                         Lets one status-right slot show the agents badge while
 #                         active and e.g. the hostname otherwise.
 #
+# Event-driven modes (used by the auto-injected status line, see
+# agents_session_manager.tmux). These avoid a fork on every status refresh:
+#
+#   status.sh --refresh   Recompute the summary and store it in the
+#                         @agent_status_cache tmux option, set the
+#                         @agent_status_working flag, then refresh-client -S.
+#                         Call this whenever an agent reports a new state
+#                         (scripts/state.sh, the bundled Pi extension) so the
+#                         cached badge updates without polling. Prints nothing.
+#   status.sh --animate   Same recompute + cache update, but also prints the
+#                         summary to stdout. This is the branch tmux runs from
+#                         status-right ONLY while agents are working, to advance
+#                         the spinner. When work drops to zero it clears the
+#                         working flag and forces a re-eval so tmux switches back
+#                         to the zero-fork cached branch.
+#
 # Counts self-reported agent states only. Managed agent sessions are identified
 # by the configured session prefix; manual panes are counted only when an agent
 # integration has written pane-scoped @agent_state. This script intentionally
@@ -55,13 +71,17 @@ show_idle="${show_idle:-off}"
 state_ttl="${state_ttl:-21600}"
 export AGENT_SESSION_PREFIX
 
-# Fallback text shown when there is no active summary (e.g. a hostname). For
-# --or-host, compute hostname lazily only if the fallback will actually print.
+# Parse the mode. --or/--or-host only affect the classic print mode; --refresh
+# and --animate drive the event-driven cache and never apply a text fallback
+# (the status-right format handles the empty-cache fallback natively).
+mode=print
 fallback=""
 fallback_host=off
 case "${1:-}" in
 --or)      fallback="${2:-}" ;;
 --or-host) fallback_host=on ;;
+--refresh) mode=refresh ;;
+--animate) mode=animate ;;
 esac
 
 fallback_text() {
@@ -71,8 +91,6 @@ fallback_text() {
     printf '%s' "$fallback"
   fi
 }
-
-working=0 done_=0 blocked=0 idle=0 total=0
 
 is_numeric() {
   case "$1" in
@@ -89,107 +107,6 @@ state_is_expired() {
   [ $((status_now - at)) -gt "$state_ttl" ]
 }
 
-count_state() {
-  local state="$1" at="${2:-}"
-  # TTL is only for states that can become stale after an unclean crash/kill.
-  # A completed-but-unseen turn must remain visible until the user opens it and
-  # explicitly marks it seen.
-  case "$state" in
-  working|blocked) state_is_expired "$at" && return 0 ;;
-  esac
-  case "$state" in
-  working) working=$((working + 1)) ;;
-  done)    done_=$((done_ + 1)) ;;
-  blocked) blocked=$((blocked + 1)) ;;
-  *)       idle=$((idle + 1)) ;; # idle / unknown / empty
-  esac
-  total=$((total + 1))
-}
-
-status_now="$(date +%s)"
-
-# Managed sessions (session-scoped @agent_state). Read state in the list call to
-# avoid one extra tmux process per session on every status refresh.
-while IFS=$'\t' read -r s state at; do
-  [ -z "$s" ] && continue
-  is_managed_session "$s" || continue
-  [ -n "$state" ] || continue
-  count_state "$state" "$at"
-done < <(tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}' 2>/dev/null)
-
-# Manual agent panes. Do not discover agents from process names here: status.sh
-# runs from status-right and may execute every second. A manual pane is counted
-# only after pi/codex/claude/etc. self-reports by writing pane-scoped
-# @agent_state via scripts/state.sh or an equivalent integration. Do not read
-# #{@agent_state} from list-panes here: tmux formats fall back to session-scoped
-# options, which would count every pane in a manual session with session state.
-manual_panes=()
-while IFS=$'\t' read -r s pane; do
-  [ -z "$pane" ] && continue
-  is_managed_session "$s" && continue
-  manual_panes+=("$pane")
-done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}' 2>/dev/null)
-
-# Read pane-scoped state for all manual panes with one tmux client process. Use
-# named option output plus a marker line per pane, because show-options -qv emits
-# no placeholder for unset options; relying on line positions would mis-associate
-# @agent_state and @agent_state_at when one is missing.
-if [ "${#manual_panes[@]}" -gt 0 ]; then
-  pane_state_cmd=(tmux)
-  for pane in "${manual_panes[@]}"; do
-    if [ "${#pane_state_cmd[@]}" -gt 1 ]; then
-      pane_state_cmd+=(\;)
-    fi
-    pane_state_cmd+=(display-message -p -t "$pane" "__agent_pane__ $pane")
-    pane_state_cmd+=(\; show-options -pq -t "$pane")
-  done
-  pane_states="$("${pane_state_cmd[@]}" 2>/dev/null)" || exit $?
-
-  current_pane='' pane_state='' pane_at=''
-  flush_pane_state() {
-    [ -n "$current_pane" ] || return 0
-    [ -n "$pane_state" ] || return 0
-    count_state "$pane_state" "$pane_at"
-  }
-
-  while IFS= read -r line; do
-    case "$line" in
-    "__agent_pane__ "*)
-      flush_pane_state
-      current_pane="${line#__agent_pane__ }"
-      pane_state=''
-      pane_at=''
-      ;;
-    "@agent_state "*)
-      pane_state="${line#@agent_state }"
-      ;;
-    "@agent_state_at "*)
-      pane_at="${line#@agent_state_at }"
-      ;;
-    blocked|working|done|idle)
-      [ -z "$pane_state" ] && pane_state="$line"
-      ;;
-    esac
-  done <<< "$pane_states"
-  flush_pane_state
-fi
-
-# Nothing to show.
-[ "$total" -eq 0 ] && { fallback_text; exit 0; }
-
-# Animate the working icon by cycling through a space-separated list of frames,
-# advancing one frame per second (driven by the caller's status-interval). Defer
-# date(1) until we know a working segment will be visible.
-# Enable with: set -g @agent_status_animate_working 'on'
-# Customise frames with: set -g @agent_status_anim_frames '✦ ✶ ✷ ✶'
-if [ "$working" -gt 0 ] && [ "$animate_working" = on ]; then
-  # shellcheck disable=SC2206
-  frames=($anim_frames)
-  if [ "${#frames[@]}" -gt 0 ]; then
-    icon_working="${frames[$(( status_now % ${#frames[@]} ))]}"
-  fi
-fi
-
 # Build segments. With colour: "#[fg=COL]N ICON#[default]".
 seg() {
   local n="$1" icon="$2" col="$3"
@@ -201,15 +118,176 @@ seg() {
   fi
 }
 
-segments=""
-segments+="$(seg "$blocked" "$icon_blocked" "$col_blocked")"
-segments+="$(seg "$working" "$icon_working" "$col_working")"
-segments+="$(seg "$done_"   "$icon_done"    "$col_done")"
-[ "$show_idle" = on ] && segments+="$(seg "$idle" "$icon_idle" "$col_idle")"
+# compute_summary scans managed sessions and manual panes, then sets two
+# globals for the caller:
+#   SUMMARY        the badge string (with sigil), or empty when nothing is shown
+#   WORKING_COUNT  number of active "working" agents after TTL expiry
+# It does not print anything and does not apply the text fallback, so every
+# mode can share it.
+SUMMARY=""
+WORKING_COUNT=0
 
-# No visible state segments -> show the fallback (empty by default) so the whole
-# badge (sigil included) disappears instead of leaving a lone marker stuck.
-[ -z "$segments" ] && { fallback_text; exit 0; }
+compute_summary() {
+  local working=0 done_=0 blocked=0 idle=0 total=0
 
-# Trim a single trailing space.
-printf '%s%s' "$sigil " "${segments% }"
+  count_state() {
+    local state="$1" at="${2:-}"
+    # TTL is only for states that can become stale after an unclean crash/kill.
+    # A completed-but-unseen turn must remain visible until the user opens it
+    # and explicitly marks it seen.
+    case "$state" in
+    working|blocked) state_is_expired "$at" && return 0 ;;
+    esac
+    case "$state" in
+    working) working=$((working + 1)) ;;
+    done)    done_=$((done_ + 1)) ;;
+    blocked) blocked=$((blocked + 1)) ;;
+    *)       idle=$((idle + 1)) ;; # idle / unknown / empty
+    esac
+    total=$((total + 1))
+  }
+
+  # Managed sessions (session-scoped @agent_state). Read state in the list call
+  # to avoid one extra tmux process per session on every status refresh.
+  local s state at
+  while IFS=$'\t' read -r s state at; do
+    [ -z "$s" ] && continue
+    is_managed_session "$s" || continue
+    [ -n "$state" ] || continue
+    count_state "$state" "$at"
+  done < <(tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}' 2>/dev/null)
+
+  # Manual agent panes. Do not discover agents from process names here:
+  # status.sh runs from status-right and may execute every second. A manual pane
+  # is counted only after pi/codex/claude/etc. self-reports by writing
+  # pane-scoped @agent_state via scripts/state.sh or an equivalent integration.
+  # Do not read #{@agent_state} from list-panes here: tmux formats fall back to
+  # session-scoped options, which would count every pane in a manual session
+  # with session state.
+  local pane
+  local -a manual_panes=()
+  while IFS=$'\t' read -r s pane; do
+    [ -z "$pane" ] && continue
+    is_managed_session "$s" && continue
+    manual_panes+=("$pane")
+  done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}' 2>/dev/null)
+
+  # Read pane-scoped state for all manual panes with one tmux client process.
+  # Use named option output plus a marker line per pane, because show-options
+  # -qv emits no placeholder for unset options; relying on line positions would
+  # mis-associate @agent_state and @agent_state_at when one is missing.
+  if [ "${#manual_panes[@]}" -gt 0 ]; then
+    local -a pane_state_cmd=(tmux)
+    for pane in "${manual_panes[@]}"; do
+      if [ "${#pane_state_cmd[@]}" -gt 1 ]; then
+        pane_state_cmd+=(\;)
+      fi
+      pane_state_cmd+=(display-message -p -t "$pane" "__agent_pane__ $pane")
+      pane_state_cmd+=(\; show-options -pq -t "$pane")
+    done
+    local pane_states
+    pane_states="$("${pane_state_cmd[@]}" 2>/dev/null)" || exit $?
+
+    local current_pane='' pane_state='' pane_at='' line
+    flush_pane_state() {
+      [ -n "$current_pane" ] || return 0
+      [ -n "$pane_state" ] || return 0
+      count_state "$pane_state" "$pane_at"
+    }
+
+    while IFS= read -r line; do
+      case "$line" in
+      "__agent_pane__ "*)
+        flush_pane_state
+        current_pane="${line#__agent_pane__ }"
+        pane_state=''
+        pane_at=''
+        ;;
+      "@agent_state "*)
+        pane_state="${line#@agent_state }"
+        ;;
+      "@agent_state_at "*)
+        pane_at="${line#@agent_state_at }"
+        ;;
+      blocked|working|done|idle)
+        [ -z "$pane_state" ] && pane_state="$line"
+        ;;
+      esac
+    done <<< "$pane_states"
+    flush_pane_state
+  fi
+
+  WORKING_COUNT="$working"
+
+  # Nothing to show.
+  if [ "$total" -eq 0 ]; then
+    SUMMARY=""
+    return 0
+  fi
+
+  # Animate the working icon by cycling through a space-separated list of
+  # frames, advancing one frame per second (driven by the caller's
+  # status-interval). Defer icon selection until we know a working segment will
+  # be visible.
+  # Enable with: set -g @agent_status_animate_working 'on'
+  # Customise frames with: set -g @agent_status_anim_frames '✦ ✶ ✷ ✶'
+  local icon_working_frame="$icon_working"
+  if [ "$working" -gt 0 ] && [ "$animate_working" = on ]; then
+    # shellcheck disable=SC2206
+    local -a frames=($anim_frames)
+    if [ "${#frames[@]}" -gt 0 ]; then
+      icon_working_frame="${frames[$(( status_now % ${#frames[@]} ))]}"
+    fi
+  fi
+
+  local segments=""
+  segments+="$(seg "$blocked" "$icon_blocked" "$col_blocked")"
+  segments+="$(seg "$working" "$icon_working_frame" "$col_working")"
+  segments+="$(seg "$done_"   "$icon_done"    "$col_done")"
+  [ "$show_idle" = on ] && segments+="$(seg "$idle" "$icon_idle" "$col_idle")"
+
+  # No visible state segments -> empty summary so the whole badge (sigil
+  # included) disappears instead of leaving a lone marker stuck.
+  if [ -z "$segments" ]; then
+    SUMMARY=""
+    return 0
+  fi
+
+  # Trim a single trailing space.
+  SUMMARY="$sigil ${segments% }"
+}
+
+status_now="$(date +%s)"
+compute_summary
+
+case "$mode" in
+print)
+  if [ -n "$SUMMARY" ]; then
+    printf '%s' "$SUMMARY"
+  else
+    fallback_text
+  fi
+  ;;
+refresh|animate)
+  # Keep polling (and thus animating) only while there is at least one working
+  # agent AND animation is enabled. Otherwise clear the flag so tmux evaluates
+  # the status-right condition as false and stops forking this script entirely.
+  working_flag=""
+  if [ "$WORKING_COUNT" -gt 0 ] && [ "$animate_working" = on ]; then
+    working_flag=1
+  fi
+  tmux set-option -g @agent_status_cache "$SUMMARY" \
+    \; set-option -g @agent_status_working "$working_flag" 2>/dev/null || true
+
+  if [ "$mode" = animate ]; then
+    printf '%s' "$SUMMARY"
+    # When work just dropped to zero, force a re-eval so tmux switches to the
+    # zero-fork cached branch immediately instead of after one more interval.
+    if [ -z "$working_flag" ]; then
+      tmux refresh-client -S 2>/dev/null || true
+    fi
+  else
+    tmux refresh-client -S 2>/dev/null || true
+  fi
+  ;;
+esac

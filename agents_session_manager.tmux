@@ -32,20 +32,37 @@ tmux bind-key "$list_key" \
   run-shell "$CURRENT_DIR/scripts/list.sh '#{client_name}'"
 
 # Optional: append a compact agent status summary to status-right.
-# Enable with `set -g @agent_status on`. The interval (seconds)
-# controls how often tmux re-runs the summary; status-interval also bounds it.
+# Enable with `set -g @agent_status on`.
+#
+# Event-driven, not polled. The badge normally comes from the cached
+# @agent_status_cache option, which tmux expands with zero forks. Agents refresh
+# that cache only when their state changes (scripts/state.sh / the bundled Pi
+# extension call `status.sh --refresh`). The one exception is the spinner: while
+# any agent is working, @agent_status_working is set and tmux runs
+# `status.sh --animate` from status-right to advance the animation frame. tmux
+# lazily evaluates only the selected branch of #{?...}, so when nothing is
+# working the animate branch is never forked and CPU use drops to zero.
+#
+# @agent_status_interval still bounds how often the spinner advances while
+# working; it no longer sets a permanent polling cost for idle/done states.
 status_enabled="$(get_tmux_option @agent_status 'off')"
 if [ "$status_enabled" = on ]; then
   status_interval="$(get_tmux_option @agent_status_interval '1')"
-  summary="#($CURRENT_DIR/scripts/status.sh)"
+  # While working: fork status.sh --animate to advance the spinner.
+  # Otherwise:     expand the cached badge (or #h when it is empty). Zero forks.
+  summary="#{?@agent_status_working,#($CURRENT_DIR/scripts/status.sh --animate),#{?@agent_status_cache,#{@agent_status_cache},#h}}"
   current_right="$(tmux show-option -gqv status-right)"
-  # Avoid appending twice on plugin reload.
+  # Avoid appending twice on plugin reload. Match either the new marker option
+  # or a legacy raw #(status.sh) embed from an earlier version of this plugin.
   case "$current_right" in
-  *"$CURRENT_DIR/scripts/status.sh"*) : ;;
+  *"@agent_status_working"*|*"$CURRENT_DIR/scripts/status.sh"*) : ;;
   *) tmux set-option -g status-right "$summary $current_right" ;;
   esac
-  # Ensure the line refreshes often enough to feel live.
+  # Ensure the line refreshes often enough to animate smoothly while working.
   if [ "$(tmux show-option -gqv status-interval)" -gt "$status_interval" ] 2>/dev/null; then
     tmux set-option -g status-interval "$status_interval"
   fi
+  # Prime the cache once on load so the badge reflects current state before the
+  # first agent event fires.
+  tmux run-shell -b "$CURRENT_DIR/scripts/status.sh --refresh"
 fi

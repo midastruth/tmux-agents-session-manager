@@ -197,7 +197,13 @@ case "$cmd" in
   has-session)
     [ "${TMUX_MOCK_HAS_SESSION:-no}" = yes ]
     ;;
-  new-session|set-option|display-popup|kill-session|send-keys|attach-session|switch-client|detach-client)
+  new-session|set-option|display-popup|kill-session|send-keys|attach-session|switch-client|detach-client|refresh-client)
+    exit 0
+    ;;
+  run-shell)
+    # Ignore backgrounded refreshes (`run-shell -b .../status.sh --refresh`).
+    # Running them would recurse into status.sh during unrelated tests; the log
+    # entry above is enough to assert the trigger fired.
     exit 0
     ;;
   *)

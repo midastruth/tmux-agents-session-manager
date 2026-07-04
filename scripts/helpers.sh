@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 # Shared helpers for tmux-agents-session-manager.
 
+# Absolute directory of this helpers file, so trigger_status_refresh can locate
+# status.sh without every caller passing a path. Resolved once at source time.
+if [ -z "${STATUS_HELPERS_DIR:-}" ]; then
+  __helpers_src="${BASH_SOURCE[0]}"
+  __helpers_dir="${__helpers_src%/*}"
+  [ "$__helpers_dir" = "$__helpers_src" ] && __helpers_dir=.
+  STATUS_HELPERS_DIR="$(cd "$__helpers_dir" 2>/dev/null && pwd)"
+  unset __helpers_src __helpers_dir
+fi
+
+# trigger_status_refresh
+# Recompute the cached status badge (@agent_status_cache) in the background, so
+# the event-driven status line updates promptly after a state change without any
+# periodic polling. Safe to call from hot paths: it backgrounds status.sh and
+# returns immediately, and is a no-op when the auto-injected status line is off
+# (status.sh --refresh just rewrites an unused option). SOURCE_PATH/DIR from the
+# caller locate status.sh next to this helper.
+# shellcheck disable=SC2120  # dir arg is optional; callers rely on the default.
+trigger_status_refresh() {
+  local dir="${1:-${STATUS_HELPERS_DIR:-}}"
+  [ -n "$dir" ] || return 0
+  [ -x "$dir/status.sh" ] || return 0
+  tmux run-shell -b "$dir/status.sh --refresh" 2>/dev/null || true
+}
+
 # get_tmux_option <option-name> <default>
 # Echoes the global tmux option value, or the default when unset/empty.
 get_tmux_option() {
@@ -96,6 +121,8 @@ mark_managed_session_seen_if_done() {
 
   [ "${#args[@]}" -gt 0 ] || return 0
   tmux "${args[@]}" 2>/dev/null || true
+  # State changed (done -> seen); refresh the cached status badge.
+  trigger_status_refresh
 }
 
 # mark_pane_seen_if_done <pane>
@@ -106,6 +133,8 @@ mark_pane_seen_if_done() {
   now="$(date +%s)"
   tmux set-option -p -t "$pane" @agent_state idle \
     \; set-option -p -t "$pane" @agent_state_at "$now" 2>/dev/null || true
+  # State changed (done -> seen); refresh the cached status badge.
+  trigger_status_refresh
 }
 
 # detect_commands

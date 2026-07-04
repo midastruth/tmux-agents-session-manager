@@ -1,10 +1,34 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const VALID_STATES = new Set(["blocked", "working", "done", "idle"]);
 const DEFAULT_SESSION_PREFIX = "agent-";
 let tmuxSession: string | undefined;
 let sessionPrefix: string | undefined;
+
+// Absolute path to scripts/status.sh, resolved relative to this extension file
+// (extensions/ and scripts/ are siblings in the plugin checkout). Used to prime
+// the event-driven status badge after a state change instead of polling.
+function statusScriptPath(): string | undefined {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    return join(here, "..", "scripts", "status.sh");
+  } catch {
+    return undefined;
+  }
+}
+
+// triggerStatusRefresh recomputes the cached status badge in the background so
+// the event-driven status line updates promptly after a reported state change,
+// with no periodic polling. Mirrors trigger_status_refresh() in
+// scripts/helpers.sh. Fire-and-forget: `tmux run-shell -b` backgrounds it.
+function triggerStatusRefresh() {
+  const script = statusScriptPath();
+  if (!script) return;
+  runTmux(["run-shell", "-b", `${script} --refresh`]);
+}
 
 function runTmux(args: string[]): string | undefined {
   try {
@@ -104,7 +128,12 @@ function setState(state: "blocked" | "working" | "done" | "idle") {
     addTmuxCommand(["set-option", "-t", session, "@agent_state_at", now]);
   }
 
-  if (args.length > 0) runTmux(args);
+  if (args.length > 0) {
+    runTmux(args);
+    // Refresh the cached status badge now that state changed, so the
+    // event-driven status line reflects this report without polling.
+    triggerStatusRefresh();
+  }
 }
 
 export default function piTmuxStateExtension(pi: ExtensionAPI) {
