@@ -28,7 +28,11 @@ ROOT="$(cd "$DIR/.." && pwd)"
 
 select_out=''
 if [ "${1:-}" = '--select' ]; then
-  select_out="${2:-}"
+  # --select requires an output file. Without one there is nowhere to report
+  # the chosen agent, and `shift 2` would fail leaving '--select' in $1 to be
+  # misread as the directory. Only used internally, but fail cleanly anyway.
+  [ -n "${2:-}" ] || exit 0
+  select_out="$2"
   shift 2
 fi
 

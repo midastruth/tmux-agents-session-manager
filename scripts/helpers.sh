@@ -129,7 +129,7 @@ mark_managed_session_seen_if_done() {
       set-option -pu -t "$pane" @agent_state
       \; set-option -pu -t "$pane" @agent_state_at
     )
-  done < <(tmux list-panes -t "$session" -F '#{pane_id}' 2>/dev/null)
+  done < <(tmux list-panes -s -t "$session" -F '#{pane_id}' 2>/dev/null)
 
   [ "${#args[@]}" -gt 0 ] || return 0
   tmux "${args[@]}" 2>/dev/null || true

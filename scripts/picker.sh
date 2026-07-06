@@ -177,11 +177,17 @@ emit_rows() {
       {
         # Decorate: convert the humanized age (45s/12m/3h/2d/-) back into
         # seconds so the numeric sort compares real ages. Sorting the display
-        # string numerically would rank "3h" (3) before "45s" (45).
-        n = $6 + 0
-        u = substr($6, length($6))
-        secs = (u == "m") ? n * 60 : (u == "h") ? n * 3600 : \
-               (u == "d") ? n * 86400 : n
+        # string numerically would rank "3h" (3) before "45s" (45). An unknown
+        # age ("-") must sort last within its rank, not first: "-" + 0 is 0,
+        # which would outrank every real timestamp as the youngest row.
+        if ($6 == "-") {
+          secs = 2147483647
+        } else {
+          n = $6 + 0
+          u = substr($6, length($6))
+          secs = (u == "m") ? n * 60 : (u == "h") ? n * 3600 : \
+                 (u == "d") ? n * 86400 : n
+        }
         print secs, $0
       }' |
     # rank asc (attention-needed floats up), then age asc so the session that

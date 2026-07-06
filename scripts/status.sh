@@ -50,6 +50,29 @@ IFS="$option_sep" read -r \
   col_working col_done col_blocked col_idle \
   use_color show_idle state_ttl <<< "$option_values"
 
+# display-message needs a client/pane context that hooks and backgrounded
+# run-shell calls may lack. If the batched read produced nothing, fall back to
+# per-option show-option reads (slower, but this path is rare) instead of
+# silently rendering with defaults — a custom @agent_session_prefix would
+# otherwise miscount managed sessions.
+if [ -z "$option_values" ]; then
+  AGENT_SESSION_PREFIX="$(get_tmux_option @agent_session_prefix '')"
+  icon_working="$(get_tmux_option @agent_status_icon_working '')"
+  icon_done="$(get_tmux_option @agent_status_icon_done '')"
+  icon_blocked="$(get_tmux_option @agent_status_icon_blocked '')"
+  icon_idle="$(get_tmux_option @agent_status_icon_idle '')"
+  sigil="$(get_tmux_option @agent_status_sigil '')"
+  animate_working="$(get_tmux_option @agent_status_animate_working '')"
+  anim_frames="$(get_tmux_option @agent_status_anim_frames '')"
+  col_working="$(get_tmux_option @agent_status_color_working '')"
+  col_done="$(get_tmux_option @agent_status_color_done '')"
+  col_blocked="$(get_tmux_option @agent_status_color_blocked '')"
+  col_idle="$(get_tmux_option @agent_status_color_idle '')"
+  use_color="$(get_tmux_option @agent_status_color '')"
+  show_idle="$(get_tmux_option @agent_status_show_idle '')"
+  state_ttl="$(get_tmux_option @agent_state_ttl '')"
+fi
+
 # Apply defaults for unset/empty options, matching get_tmux_option semantics.
 AGENT_SESSION_PREFIX="${AGENT_SESSION_PREFIX:-agent-}"
 icon_working="${icon_working:-✦}"
@@ -262,7 +285,9 @@ EOF
       existing="$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 1
       before_count="${#manual_panes[@]}"
       filter_existing_manual_panes "$existing"
-      manual_panes=("${filtered_panes[@]}")
+      # ${arr[@]+...} guards the empty-array case: bash < 4.4 (macOS /bin/bash
+      # 3.2) treats "${arr[@]}" of an empty array as unbound under `set -u`.
+      manual_panes=(${filtered_panes[@]+"${filtered_panes[@]}"})
       [ "${#manual_panes[@]}" -eq 0 ] && return 0
       [ "${#manual_panes[@]}" -lt "$before_count" ] || return 1
     done

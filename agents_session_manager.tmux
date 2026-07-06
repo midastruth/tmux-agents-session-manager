@@ -55,7 +55,13 @@ if [ "$status_enabled" = on ]; then
   # (no reported agent states) nothing is printed, matching the documented
   # behavior; use #(status.sh --or-host) directly if you want a host fallback.
   status_q=$(printf '%q' "$CURRENT_DIR/scripts/status.sh")
-  summary="#{?@agent_status_working,#($status_q --animate),#{@agent_status_cache}}"
+  # Reference status.sh through the @agent_status_script option (set above)
+  # instead of embedding the literal install path in the format: a path
+  # containing ',' or ')' would break tmux's #{?...}/#(...) parsing, and shell
+  # %q quoting cannot help at that layer. tmux expands #{@agent_status_script}
+  # inside #(...) before running the command; the double quotes keep installs
+  # under directories with spaces working at the shell layer.
+  summary="#{?@agent_status_working,#(\"#{@agent_status_script}\" --animate),#{@agent_status_cache}}"
   current_right="$(tmux show-option -gqv status-right)"
   # Avoid appending twice on plugin reload. Match either the new marker option
   # or a legacy raw #(status.sh) embed from an earlier version of this plugin.
@@ -64,7 +70,11 @@ if [ "$status_enabled" = on ]; then
   *) tmux set-option -g status-right "$summary $current_right" ;;
   esac
   # Ensure the line refreshes often enough to animate smoothly while working.
-  if [ "$(tmux show-option -gqv status-interval)" -gt "$status_interval" ] 2>/dev/null; then
+  # status-interval 0 disables periodic refresh entirely, which would freeze
+  # the working spinner; treat it as the loosest interval and tighten it too.
+  current_interval="$(tmux show-option -gqv status-interval)"
+  if [ "$current_interval" -eq 0 ] 2>/dev/null ||
+    [ "$current_interval" -gt "$status_interval" ] 2>/dev/null; then
     tmux set-option -g status-interval "$status_interval"
   fi
   # Prime the cache once on load so the badge reflects current state before the

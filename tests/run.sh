@@ -175,6 +175,16 @@ TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
 out="$(run_bash 'scripts/status.sh --or fallback')"
 assert_eq 'status.sh prints fallback with no states' 'fallback' "$out"
 
+# When the batched display-message option read yields nothing (no client
+# context, e.g. hooks / backgrounded run-shell), status.sh must fall back to
+# per-option show-option reads instead of silently using defaults — a custom
+# @agent_session_prefix would otherwise miscount managed sessions.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=custom-\n@agent_status_animate_working=off'
+TMUX_MOCK_LIST_SESSIONS=$'custom-a\tworking\nagent-b\tdone'
+out="$(run_bash 'scripts/status.sh')"
+assert_eq 'status.sh honors custom prefix without client context' 'agents 1✦' "$out"
+
 reset_mocks
 TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
 TMUX_MOCK_LIST_SESSIONS=$'agent-a\tworking\nagent-b\tdone\nwork\tblocked'
@@ -341,9 +351,23 @@ now_ts="$(date +%s)"
 PICKER_NOW="$now_ts"
 TMUX_MOCK_LIST_SESSIONS="agent-old	blocked	$((now_ts - 10800))	/tmp/old	pi	pi
 agent-new	blocked	$((now_ts - 45))	/tmp/new	pi	pi"
-out="$(run_bash 'scripts/picker.sh --list' | cut -f3 | paste -sd,)"
+out="$(run_bash 'scripts/picker.sh --list' | cut -f3 | paste -sd, -)"
 assert_eq 'picker --list sorts same-rank rows by real age ascending' \
   'agent-new,agent-old' "$out"
+
+# A row with no timestamp renders '-' for its age. It must sort LAST within its
+# rank, not first: awk's "-" + 0 is 0, which would otherwise make an unknown
+# age look like the youngest row.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+now_ts="$(date +%s)"
+PICKER_NOW="$now_ts"
+TMUX_MOCK_LIST_SESSIONS="agent-old	blocked	$((now_ts - 10800))	/tmp/old	pi	pi
+agent-noage	blocked		/tmp/noage	pi	pi
+agent-new	blocked	$((now_ts - 45))	/tmp/new	pi	pi"
+out="$(run_bash 'scripts/picker.sh --list' | cut -f3 | paste -sd, -)"
+assert_eq 'picker --list sorts unknown age last within its rank' \
+  'agent-new,agent-old,agent-noage' "$out"
 
 reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
@@ -573,6 +597,34 @@ run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_not_contains 'entrypoint leaves status-right untouched when @agent_status off' \
   "$log_contents" $'set-option\t-g\tstatus-right'
+
+# The injected badge must reference status.sh via #{@agent_status_script}, not
+# a literal install path: paths containing ',' or ')' would break tmux's
+# #{?...}/#(...) format parsing.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'entrypoint badge references status.sh via the script option' \
+  "$log_contents" '#("#{@agent_status_script}" --animate)'
+
+# status-interval 0 disables periodic refresh, freezing the working spinner.
+# The entrypoint must tighten it to @agent_status_interval like any interval
+# that is too loose.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'status-right=%H:%M\nstatus-interval=0'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'entrypoint tightens status-interval 0 for the spinner' \
+  "$log_contents" $'set-option\t-g\tstatus-interval\t1'
+
+# A tight-enough status-interval must be left alone.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'status-right=%H:%M\nstatus-interval=1'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'entrypoint keeps a tight status-interval unchanged' \
+  "$log_contents" $'set-option\t-g\tstatus-interval'
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
