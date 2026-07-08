@@ -90,7 +90,7 @@ status_options() {
   local color="${3:-off}"
   local show_idle="${4:-off}"
   local ttl="${5:-21600}"
-  printf '%s' "${prefix}${us}✦${us}✓${us}●${us}·${us}agents${us}${animate}${us}✦ ✶ ✷ ✶${us}yellow${us}cyan${us}red${us}green${us}${color}${us}${show_idle}${us}${ttl}"
+  printf '%s' "${prefix}${us}✦${us}✓${us}●${us}·${us}agents${us}${animate}${us}✦ ✷  ✹  ✴${us}yellow${us}cyan${us}red${us}green${us}${color}${us}${show_idle}${us}${ttl}"
 }
 
 # helpers.sh

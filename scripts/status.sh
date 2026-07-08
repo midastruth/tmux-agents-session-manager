@@ -81,7 +81,7 @@ icon_blocked="${icon_blocked:-●}"
 icon_idle="${icon_idle:-·}"
 sigil="${sigil:-agents}"
 animate_working="${animate_working:-on}"
-anim_frames="${anim_frames:-✦ ✶ ✷ ✶}"
+anim_frames="${anim_frames:-✦ ✷  ✹  ✴}"
 col_working="${col_working:-yellow}"
 col_done="${col_done:-cyan}"
 col_blocked="${col_blocked:-red}"
@@ -351,7 +351,7 @@ EOF
   # status-interval). Defer icon selection until we know a working segment will
   # be visible.
   # Enable with: set -g @agent_status_animate_working 'on'
-  # Customise frames with: set -g @agent_status_anim_frames '✦ ✶ ✷ ✶'
+  # Customise frames with: set -g @agent_status_anim_frames '✦ ✷  ✹  ✴'
   local icon_working_frame="$icon_working"
   if [ "$working" -gt 0 ] && [ "$animate_working" = on ]; then
     # shellcheck disable=SC2206

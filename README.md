@@ -264,7 +264,7 @@ Give the `working` count a subtle spinner so active turns stand out:
 
 ```tmux
 set -g @agent_status_animate_working 'on'
-set -g @agent_status_anim_frames     '✦ ✶ ✷ ✶'   # space-separated frames
+set -g @agent_status_anim_frames     '✦ ✷  ✹  ✴'   # space-separated frames
 ```
 
 Frames advance roughly once per second (driven by `status-interval`), so keep
@@ -304,7 +304,7 @@ set -g @agent_status_color_working 'yellow'
 set -g @agent_status_color_done    'cyan'
 set -g @agent_status_color_idle    'green'
 set -g @agent_status_animate_working 'on'   # 'on' animates the working icon
-set -g @agent_status_anim_frames     '✦ ✶ ✷ ✶'  # spinner frames (space-separated)
+set -g @agent_status_anim_frames     '✦ ✷  ✹  ✴'  # spinner frames (space-separated)
 set -g @agent_state_ttl              '21600'      # seconds before stale states are ignored; 0 disables
 ```
 

@@ -37,7 +37,7 @@ export AGENT_DETECT_WRAPPERS='node bun npx npm pnpm yarn'
 
 status_options() {
   local us=$'\037'
-  printf '%s' "agent-${us}✦${us}✓${us}●${us}·${us}agents${us}off${us}✦ ✶ ✷ ✶${us}yellow${us}cyan${us}red${us}green${us}off${us}off${us}21600"
+  printf '%s' "agent-${us}✦${us}✓${us}●${us}·${us}agents${us}off${us}✦ ✷  ✹  ✴${us}yellow${us}cyan${us}red${us}green${us}off${us}off${us}21600"
 }
 
 # --- timing -------------------------------------------------------------
