@@ -95,7 +95,7 @@ show_idle="${show_idle:-off}"
 # Ignore states whose timestamp is older than this many seconds. This prevents
 # manually-started panes (or crashed managed agents) from leaving a permanent
 # "working" badge after an unclean exit. Set to 0 to disable expiry.
-state_ttl="${state_ttl:-21600}"
+state_ttl="${state_ttl:-259200}"
 export AGENT_SESSION_PREFIX
 
 # Parse the mode. --or/--or-host only affect the classic print mode; --refresh

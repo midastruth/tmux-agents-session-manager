@@ -90,7 +90,7 @@ status_options() {
   local animate="${2:-off}"
   local color="${3:-off}"
   local show_idle="${4:-off}"
-  local ttl="${5:-21600}"
+  local ttl="${5:-259200}"
   printf '%s' "${prefix}${us}✦${us}✓${us}●${us}·${us}agents${us}${animate}${us}✦ ✷  ✹  ✴${us}yellow${us}cyan${us}red${us}green${us}${color}${us}${show_idle}${us}${ttl}"
 }
 
@@ -217,7 +217,7 @@ assert_eq 'status.sh can render color and idle segments' 'agents #[fg=red]1●#[
 
 reset_mocks
 TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off)"
-stale_at=$(( $(date +%s) - 30000 ))
+stale_at=$(( $(date +%s) - 300000 ))
 TMUX_MOCK_LIST_PANES=$'work\t%1'
 TMUX_MOCK_TARGET_OPTIONS="%1|@agent_state=working"$'\n'"%1|@agent_state_at=$stale_at"
 out="$(run_bash 'scripts/status.sh --or fallback')"
