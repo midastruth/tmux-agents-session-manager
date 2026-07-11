@@ -410,6 +410,12 @@ set -g @agent_default_command "pi -e '/path/to/tmux-agents-session-manager/exten
 Configuration uses the `@agent_*` option namespace (for example
 `@agent_state`). Old Pi-prefixed option names are not read or written.
 
+## Acknowledgements
+
+This project was originally forked from
+[craftzdog/tmux-claude-session-manager](https://github.com/craftzdog/tmux-claude-session-manager.git).
+Many thanks to [Takuya Matsuyama (craftzdog)](https://github.com/craftzdog) for creating and open-sourcing the original project.
+
 ## Development
 
 Run the lightweight unit test suite with:
