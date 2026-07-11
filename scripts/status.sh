@@ -24,10 +24,11 @@
 #                         the spinner. When work drops to zero it clears the
 #                         working flag and forces a re-eval so tmux switches back
 #                         to the zero-fork cached branch.
-#   status.sh --expire N  Refresh only if N is still the next scheduled state
-#                         expiry. Used internally by a one-shot tmux run-shell
-#                         timer so blocked states (and non-animated working
-#                         states) honor @agent_state_ttl without idle polling.
+#   status.sh --expire N G  Refresh only if N/G are still the scheduled state
+#                           expiry and generation. Used internally by a one-shot
+#                           tmux run-shell timer so blocked states (and
+#                           non-animated working states) honor @agent_state_ttl
+#                           without idle polling.
 #
 # Counts self-reported agent states only. Managed agent sessions are identified
 # by the configured session prefix; manual panes are counted only when an agent
@@ -105,12 +106,13 @@ mode=print
 fallback=""
 fallback_host=off
 expiry_token=''
+expiry_generation=''
 case "${1:-}" in
 --or)      fallback="${2:-}" ;;
 --or-host) fallback_host=on ;;
 --refresh) mode=refresh ;;
 --animate) mode=animate ;;
---expire)  mode=expire; expiry_token="${2:-}" ;;
+--expire)  mode=expire; expiry_token="${2:-}"; expiry_generation="${3:-}" ;;
 esac
 
 fallback_text() {
@@ -128,13 +130,31 @@ is_numeric() {
   esac
 }
 
-# Delayed timers cannot be cancelled by tmux. Treat the scheduled epoch as a
-# generation token so a newer state report can invalidate an older timer at
-# negligible cost, before it scans any sessions or panes.
+# Snapshot publication and timer identities before scanning. Animation and
+# expiry publication use this revision for an optimistic server-side compare;
+# a concurrent refresh must win rather than being overwritten by an older scan.
+prev_cache=''
+prev_expiry=''
+prev_expiry_generation=''
+prev_revision=''
+case "$mode" in
+refresh|animate|expire)
+  prev_cache="$(tmux show-option -gqv @agent_status_cache 2>/dev/null)" || exit 1
+  prev_expiry="$(tmux show-option -gqv @agent_status_expiry_at 2>/dev/null)" || exit 1
+  prev_expiry_generation="$(tmux show-option -gqv @agent_status_expiry_generation 2>/dev/null)" || exit 1
+  prev_revision="$(tmux show-option -gqv @agent_status_revision 2>/dev/null)" || exit 1
+  ;;
+esac
+
+# Delayed timers cannot be cancelled by tmux. The expiry generation identifies
+# the actual one-shot timer, independently of the publication revision.
 if [ "$mode" = expire ]; then
   is_numeric "$expiry_token" || exit 0
-  scheduled_expiry="$(tmux show-option -gqv @agent_status_expiry_at 2>/dev/null)" || exit 1
-  [ "$scheduled_expiry" = "$expiry_token" ] || exit 0
+  case "$expiry_generation" in
+  ''|*[!0-9_]*) exit 0 ;;
+  esac
+  [ "$prev_expiry" = "$expiry_token" ] || exit 0
+  [ "$prev_expiry_generation" = "$expiry_generation" ] || exit 0
 fi
 
 state_is_expired() {
@@ -425,25 +445,94 @@ refresh|animate|expire)
   if [ "$WORKING_COUNT" -gt 0 ] && [ "$animate_working" = on ]; then
     working_flag=1
   fi
-  # Read the previous cache so a no-op refresh (same badge reported again by a
-  # chatty integration) can skip the status-line redraw below. Also read the
-  # currently scheduled expiry; unchanged state must not enqueue another timer
-  # on every animation frame.
-  prev_cache="$(tmux show-option -gqv @agent_status_cache 2>/dev/null)" || exit 1
-  prev_expiry="$(tmux show-option -gqv @agent_status_expiry_at 2>/dev/null)" || exit 1
-
-  if [ -n "$NEXT_EXPIRY_AT" ] && [ "$NEXT_EXPIRY_AT" != "$prev_expiry" ]; then
+  # Keep timer identity stable while the nearest expiry is unchanged. Since
+  # tmux delayed jobs cannot be cancelled, replacing such a timer on every
+  # report would accumulate sleeping jobs for the full TTL.
+  next_expiry_generation="$prev_expiry_generation"
+  schedule_expiry=off
+  if [ -z "$NEXT_EXPIRY_AT" ]; then
+    next_expiry_generation=''
+  elif [ "$mode" = expire ] || [ "$NEXT_EXPIRY_AT" != "$prev_expiry" ]; then
+    next_expiry_generation="${status_now}_$$"
+    schedule_expiry=on
     delay=$((NEXT_EXPIRY_AT - status_now))
     [ "$delay" -gt 0 ] || delay=1
     status_q=$(printf '%q' "$DIR/status.sh")
-    # tmux owns the delayed job, so this does not leave a shell sleeping for up
-    # to six hours. Old jobs are harmless: --expire validates the epoch token.
-    tmux run-shell -b -d "$delay" "$status_q --expire $NEXT_EXPIRY_AT" 2>/dev/null || exit 1
+    timer_command="$status_q --expire $NEXT_EXPIRY_AT $next_expiry_generation"
   fi
+  next_revision="${status_now}_$$"
 
-  tmux set-option -g @agent_status_cache "$SUMMARY" \
-    \; set-option -g @agent_status_working "$working_flag" \
-    \; set-option -g @agent_status_expiry_at "$NEXT_EXPIRY_AT" 2>/dev/null || exit 1
+  if [ "$mode" = refresh ]; then
+    publish_args=()
+    if [ "$schedule_expiry" = on ]; then
+      # Timer creation and identity publication are ordered in one tmux command
+      # sequence, so even a one-second timer sees its published identity.
+      publish_args+=(run-shell -b -d "$delay" "$timer_command" \;)
+    fi
+    publish_args+=(
+      set-option -g @agent_status_cache "$SUMMARY"
+      \; set-option -g @agent_status_working "$working_flag"
+      \; set-option -g @agent_status_expiry_at "$NEXT_EXPIRY_AT"
+      \; set-option -g @agent_status_expiry_generation "$next_expiry_generation"
+      \; set-option -g @agent_status_revision "$next_revision"
+    )
+    tmux "${publish_args[@]}" 2>/dev/null || exit 1
+  else
+    # Stage values, then publish only if no refresh or other animation changed
+    # the revision after this invocation took its pre-scan snapshot.
+    candidate_base="@agent_status_candidate_$$"
+    candidate_cache="${candidate_base}_cache"
+    candidate_working="${candidate_base}_working"
+    candidate_expiry="${candidate_base}_expiry"
+    candidate_generation="${candidate_base}_generation"
+    candidate_revision="${candidate_base}_revision"
+    candidate_timer="${candidate_base}_timer"
+    tmux set-option -g "$candidate_cache" "$SUMMARY" \
+      \; set-option -g "$candidate_working" "$working_flag" \
+      \; set-option -g "$candidate_expiry" "$NEXT_EXPIRY_AT" \
+      \; set-option -g "$candidate_generation" "$next_expiry_generation" \
+      \; set-option -g "$candidate_revision" "$next_revision" \
+      \; set-option -g "$candidate_timer" "${timer_command:-}" 2>/dev/null || exit 1
+
+    commit_command=''
+    if [ "$schedule_expiry" = on ]; then
+      commit_command="run-shell -b -d $delay \"#{${candidate_timer}}\" ; "
+    fi
+    commit_command+="set-option -gF @agent_status_cache \"#{${candidate_cache}}\" ; "
+    commit_command+="set-option -gF @agent_status_working \"#{${candidate_working}}\" ; "
+    commit_command+="set-option -gF @agent_status_expiry_at \"#{${candidate_expiry}}\" ; "
+    commit_command+="set-option -gF @agent_status_expiry_generation \"#{${candidate_generation}}\" ; "
+    commit_command+="set-option -gF @agent_status_revision \"#{${candidate_revision}}\" ; "
+    commit_command+='display-message -p committed'
+
+    if [ "$mode" = expire ]; then
+      commit_condition="#{&&:#{==:#{@agent_status_expiry_generation},$expiry_generation},#{==:#{@agent_status_revision},$prev_revision}}"
+      # If only the publication revision changed while this one-shot callback
+      # was scanning, the timer was consumed but remains responsible for the
+      # same epoch. Re-arm it instead of orphaning automatic expiry.
+      retry_delay=$((expiry_token - status_now))
+      [ "$retry_delay" -gt 0 ] || retry_delay=1
+      status_q=$(printf '%q' "$DIR/status.sh")
+      retry_command="$status_q --expire $expiry_token $expiry_generation"
+      stale_command="if-shell -F \"#{&&:#{==:#{@agent_status_expiry_at},$expiry_token},#{==:#{@agent_status_expiry_generation},$expiry_generation}}\" \"run-shell -b -d $retry_delay '$retry_command'\" '' ; display-message -p stale"
+    else
+      commit_condition="#{==:#{@agent_status_revision},$prev_revision}"
+      stale_command='display-message -p stale'
+    fi
+
+    commit_result="$(tmux if-shell -F "$commit_condition" "$commit_command" "$stale_command" 2>/dev/null)"
+    commit_rc=$?
+    tmux set-option -gu "$candidate_cache" \
+      \; set-option -gu "$candidate_working" \
+      \; set-option -gu "$candidate_expiry" \
+      \; set-option -gu "$candidate_generation" \
+      \; set-option -gu "$candidate_revision" \
+      \; set-option -gu "$candidate_timer" 2>/dev/null || exit 1
+    [ "$commit_rc" -eq 0 ] || exit 1
+    if [ "$commit_result" != committed ] && [ "$mode" = expire ]; then
+      exit 0
+    fi
+  fi
 
   if [ "$mode" = animate ]; then
     printf '%s' "$SUMMARY"

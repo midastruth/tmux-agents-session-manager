@@ -36,7 +36,7 @@ reset_mocks() {
     TMUX_MOCK_HAS_SESSION TMUX_MOCK_EXISTING_SESSIONS TMUX_MOCK_CURRENT_SESSION \
     TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE TMUX_MOCK_SERVER_PID \
     TMUX_MOCK_FAIL_TARGETS \
-    TMUX_MOCK_FAIL_REFRESH_CLIENT \
+    TMUX_MOCK_FAIL_REFRESH_CLIENT TMUX_MOCK_IF_SHELL_RESULT \
     TMUX_MOCK_PS_CHILDREN TMUX_MOCK_PS_COMM \
     AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS TMUX_PANE \
     PICKER_NOW
@@ -283,35 +283,95 @@ run_bash 'scripts/status.sh --refresh' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'status.sh schedules a one-shot blocked-state expiry refresh' \
   "$log_contents" $'run-shell\t-b\t-d\t'
-assert_contains 'status.sh records the scheduled expiry generation' \
+assert_contains 'status.sh records the scheduled expiry epoch' \
   "$log_contents" $'set-option\t-g\t@agent_status_expiry_at\t'"$timer_expiry"
-assert_contains 'status.sh expiry timer carries its generation token' \
-  "$log_contents" "--expire $timer_expiry"
+assert_contains 'status.sh records a distinct expiry generation' \
+  "$log_contents" $'set-option\t-g\t@agent_status_expiry_generation\t'
+assert_contains 'status.sh expiry timer carries its epoch and generation' \
+  "$log_contents" "--expire $timer_expiry "
+
+# Repeated reports with the same nearest expiry must retain the existing timer.
+# Delayed tmux jobs cannot be cancelled, so replacing it would accumulate one
+# sleeping job per report for the full TTL.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+same_epoch_now="$(date +%s)"
+same_epoch_expiry=$((same_epoch_now + 61))
+TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$same_epoch_expiry
+@agent_status_expiry_generation=old_1
+@agent_status_revision=old_revision"
+TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$same_epoch_now"
+run_bash 'scripts/status.sh --refresh' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'status.sh does not replace a timer whose epoch is unchanged' \
+  "$log_contents" $'run-shell\t-b\t-d\t'
+assert_contains 'status.sh preserves timer identity for an unchanged expiry' \
+  "$log_contents" $'set-option\t-g\t@agent_status_expiry_generation\told_1'
+assert_not_contains 'status.sh gives the refresh a separate publication revision' \
+  "$log_contents" $'set-option\t-g\t@agent_status_revision\told_revision'
 
 # A superseded delayed job must exit without replacing the cache.
 reset_mocks
 TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
-TMUX_MOCK_OPTIONS=$'@agent_status_expiry_at=123'
+TMUX_MOCK_OPTIONS=$'@agent_status_expiry_at=123\n@agent_status_expiry_generation=123_1'
 TMUX_MOCK_LIST_SESSIONS=$'agent-a\tblocked\t1'
-run_bash 'scripts/status.sh --expire 122' >/dev/null
+run_bash 'scripts/status.sh --expire 122 122_1' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_not_contains 'status.sh ignores a stale expiry timer' \
   "$log_contents" $'set-option\t-g\t@agent_status_cache'
 
 # When the current timer fires, the expired state disappears and the scheduled
-# epoch is cleared, invalidating any duplicate delayed jobs.
+# epoch is cleared atomically, invalidating any duplicate delayed jobs.
 reset_mocks
 TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
 due_now="$(date +%s)"
 due_at=$((due_now - 61))
-TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$due_now"
+due_generation="${due_now}_1"
+TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$due_now
+@agent_status_expiry_generation=$due_generation"
 TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$due_at"
-run_bash "scripts/status.sh --expire $due_now" >/dev/null
+run_bash "scripts/status.sh --expire $due_now $due_generation" >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'status.sh expiry timer removes an expired cached state' \
-  "$log_contents" $'set-option\t-g\t@agent_status_cache\t\t;'
-assert_contains 'status.sh expiry timer clears its generation' \
-  "$log_contents" $'set-option\t-g\t@agent_status_expiry_at\t'
+assert_contains 'status.sh expiry timer publishes through atomic timer and revision checks' \
+  "$log_contents" $'if-shell\t-F\t#{&&:#{==:#{@agent_status_expiry_generation},'"$due_generation"'}'
+assert_contains 'status.sh expiry timer atomically updates the cache' \
+  "$log_contents" 'set-option -gF @agent_status_cache'
+assert_contains 'status.sh expiry timer commits the current generation' \
+  "$log_contents" $'__if-shell-then__\t'
+
+# A state refresh may publish a newer revision while an expiry scan is in
+# progress. The final compare-and-set must discard the stale scan and re-arm
+# the consumed timer rather than overwrite the fresh cache or orphan expiry.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$due_now
+@agent_status_expiry_generation=$due_generation"
+TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$due_at"
+TMUX_MOCK_IF_SHELL_RESULT=stale
+run_bash "scripts/status.sh --expire $due_now $due_generation" >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh expiry timer discards a result superseded during its scan' \
+  "$log_contents" $'__if-shell-else__\t'
+assert_not_contains 'status.sh superseded expiry timer does not commit staged cache values' \
+  "$log_contents" $'__if-shell-then__\t'
+assert_contains 'status.sh superseded expiry scan retains a same-identity retry' \
+  "$log_contents" "--expire $due_now $due_generation"
+
+# A one-shot timer may fire before its wall-clock epoch after the clock moves
+# backwards. Since that timer has already been consumed, --expire must re-arm
+# the unchanged epoch instead of relying on the old token equality.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+early_now="$(date +%s)"
+early_expiry=$((early_now + 61))
+early_generation="${early_now}_1"
+TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$early_expiry
+@agent_status_expiry_generation=$early_generation"
+TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$early_now"
+run_bash "scripts/status.sh --expire $early_expiry $early_generation" >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh re-arms an expiry timer that fired before wall-clock expiry' \
+  "$log_contents" "--expire $early_expiry"
 
 # status.sh --refresh: cache updates are authoritative, but the redraw can fail
 # in background hook contexts with no current client. That failure must not make
@@ -353,7 +413,30 @@ TMUX_MOCK_LIST_SESSIONS=$'agent-a\tworking'
 out="$(run_bash 'scripts/status.sh --animate')"
 assert_eq 'status.sh --animate prints the summary' 'agents 1✦' "$out"
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'status.sh --animate also caches the summary' "$log_contents" $'set-option\t-g\t@agent_status_cache\tagents 1✦'
+assert_contains 'status.sh --animate also caches the summary atomically' "$log_contents" 'set-option -gF @agent_status_cache'
+
+# An animation that snapshots state before a refresh must not restore its stale
+# cache, expiry, or timer identity after that refresh publishes a new revision.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+race_now="$(date +%s)"
+race_expiry=$((race_now + 61))
+TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$race_expiry
+@agent_status_expiry_generation=timer_1
+@agent_status_revision=before_refresh"
+TMUX_MOCK_LIST_SESSIONS="agent-a	working	$race_now"
+TMUX_MOCK_IF_SHELL_RESULT=stale
+out="$(run_bash 'scripts/status.sh --animate')"
+assert_eq 'status.sh stale animation still renders its frame' 'agents 1✦' "$out"
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh animation publication compares its snapshot revision' \
+  "$log_contents" $'if-shell\t-F\t#{==:#{@agent_status_revision},before_refresh}'
+assert_contains 'status.sh animation superseded by refresh takes stale branch' \
+  "$log_contents" $'__if-shell-else__\t'
+assert_not_contains 'status.sh stale animation does not execute its publication branch' \
+  "$log_contents" $'__if-shell-then__\t'
+assert_not_contains 'status.sh stale animation does not enqueue another expiry timer' \
+  "$log_contents" $'run-shell\t-b\t-d\t'
 
 # list.sh: a regular terminal client switched directly into a managed session
 # must not be mistaken for the nested client created by display-popup.

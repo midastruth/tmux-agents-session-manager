@@ -25,6 +25,8 @@
 #   TMUX_MOCK_FAIL_TARGETS     space-separated targets whose -t queries fail
 #   TMUX_MOCK_FAIL_REFRESH_CLIENT
 #                              non-empty makes refresh-client fail
+#   TMUX_MOCK_IF_SHELL_RESULT  "committed" (default) or "stale" for the
+#                              atomic expiry-cache publication branch
 #
 # The ps mock is driven by:
 #   TMUX_MOCK_PS_CHILDREN      "ppid=pid pid..." lines
@@ -278,6 +280,15 @@ case "$cmd" in
     ;;
   refresh-client)
     [ -z "${TMUX_MOCK_FAIL_REFRESH_CLIENT:-}" ]
+    ;;
+  if-shell)
+    if [ "${TMUX_MOCK_IF_SHELL_RESULT:-committed}" = committed ]; then
+      log '__if-shell-then__' "${3:-}"
+      printf '%s' committed
+    else
+      log '__if-shell-else__' "${4:-}"
+      printf '%s' stale
+    fi
     ;;
   new-session|set-option|display-popup|kill-session|send-keys|attach-session|switch-client|detach-client)
     exit 0
