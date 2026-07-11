@@ -378,9 +378,6 @@ EOF
       "@agent_state_at "*)
         pane_at="${line#@agent_state_at }"
         ;;
-      blocked|working|done|idle)
-        [ -z "$pane_state" ] && pane_state="$line"
-        ;;
       esac
     done <<< "$pane_states"
     flush_pane_state

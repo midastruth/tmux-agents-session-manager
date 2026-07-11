@@ -155,8 +155,6 @@ emit_manual_rows() {
       case "$line" in
       "@agent_state "*)    state="${line#@agent_state }" ;;
       "@agent_state_at "*) at="${line#@agent_state_at }" ;;
-      # Compatibility with older tests/mocks that output values only.
-      blocked|working|done|idle) [ -z "$state" ] && state="$line" ;;
       esac
     done <<< "$opts"
     if [ -n "$state" ]; then

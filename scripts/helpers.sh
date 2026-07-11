@@ -86,17 +86,6 @@ is_watched_agent_pane() {
   is_pane_visible "$1"
 }
 
-# Backwards-compatible managed-only helper kept for external scripts that may
-# have sourced helpers.sh directly. New code should use is_watched_agent_pane().
-is_watched_managed_pane() {
-  local pane="$1" session
-  [ -n "$pane" ] || return 1
-  session="$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)"
-  [ -n "$session" ] || return 1
-  is_managed_session "$session" || return 1
-  is_pane_visible "$pane"
-}
-
 # mark_managed_session_seen_if_done <session>
 # Opening a managed session that has reported session-scoped "done" marks that
 # finished turn as seen. Pi/state.sh write both session-scoped and pane-scoped

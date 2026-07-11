@@ -327,8 +327,7 @@ kv_get() {
 # Portable full-table form used by resolve_pane_agent:
 #   ps -axo pid=,ppid=,comm=   (BSD/macOS)
 #   ps -eo  pid=,ppid=,comm=   (GNU/Linux fallback)
-# Reconstruct the table from the parent/child and comm fixtures so the same
-# mock data drives both the old per-parent form and this snapshot form.
+# Reconstruct the table from the parent/child and comm fixtures.
 if { [ "${1:-}" = '-axo' ] || [ "${1:-}" = '-eo' ]; } &&
   [ "${2:-}" = 'pid=,ppid=,comm=' ]; then
   line=''
@@ -341,19 +340,6 @@ if { [ "${1:-}" = '-axo' ] || [ "${1:-}" = '-eo' ]; } &&
       printf '%s %s %s\n' "$child" "$parent" "$comm"
     done
   done <<< "${TMUX_MOCK_PS_CHILDREN:-}"
-  exit 0
-fi
-
-if [ "${1:-}" = '-o' ] && [ "${2:-}" = 'pid=' ] && [ "${3:-}" = '--ppid' ]; then
-  children="$(kv_get "${TMUX_MOCK_PS_CHILDREN:-}" "${4:-}" || true)"
-  for child in $children; do
-    printf '%s\n' "$child"
-  done
-  exit 0
-fi
-
-if [ "${1:-}" = '-o' ] && [ "${2:-}" = 'comm=' ] && [ "${3:-}" = '-p' ]; then
-  kv_get "${TMUX_MOCK_PS_COMM:-}" "${4:-}" || true
   exit 0
 fi
 

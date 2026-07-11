@@ -4,7 +4,6 @@ import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VALID_STATES = new Set(["blocked", "working", "done", "idle"]);
 const DEFAULT_SESSION_PREFIX = "agent-";
 let tmuxSession: string | undefined;
 let sessionPrefix: string | undefined;
@@ -108,7 +107,6 @@ function isPaneVisible(): boolean {
 }
 
 function setState(state: "blocked" | "working" | "done" | "idle") {
-  if (!VALID_STATES.has(state)) return;
   const now = Math.floor(Date.now() / 1000).toString();
   const args: string[] = [];
   const addTmuxCommand = (command: string[]) => {
