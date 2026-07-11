@@ -18,53 +18,80 @@ invoking_client="${1:-}"
 w="$(get_tmux_option @agent_popup_width '90%')"
 h="$(get_tmux_option @agent_popup_height '90%')"
 
-# The session of a client attached to a managed session — i.e. the popup we are
-# inside, if any. Empty when invoked from a normal (non-popup) pane.
-nested_session() {
-  local client session
-  tmux list-clients -F '#{client_name} #{session_name}' 2>/dev/null |
-    while read -r client session; do
-      is_managed_session "$session" && { printf '%s\n' "$session"; return; }
+# A popup command is spawned below the tmux server, so the client created by
+# `tmux attach-session` inside it has the server pid in its process ancestry. A
+# client attached directly from a terminal does not. Session name alone cannot
+# distinguish them: choose-tree can switch a regular client into a managed
+# session, and detaching that client would kick the user out of tmux.
+is_server_spawned_client() {
+  local client="$1" pid server_pid parent_pid
+  pid="$(tmux list-clients -F '#{client_name}	#{client_pid}' 2>/dev/null |
+    awk -F '\t' -v me="$client" '$1 == me { print $2; exit }')"
+  server_pid="$(tmux display-message -p '#{pid}' 2>/dev/null)"
+
+  case "$pid:$server_pid" in
+  *[!0-9:]*|:*|*:) return 1 ;;
+  esac
+
+  while [ "$pid" -gt 1 ] 2>/dev/null; do
+    parent_pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    [ "$parent_pid" = "$server_pid" ] && return 0
+    [ -n "$parent_pid" ] && [ "$parent_pid" != "$pid" ] || break
+    pid="$parent_pid"
+  done
+  return 1
+}
+
+client_session() {
+  local wanted="$1" client session
+  tmux list-clients -F '#{client_name}	#{session_name}' 2>/dev/null |
+    while IFS=$'\t' read -r client session; do
+      [ "$client" = "$wanted" ] && { printf '%s\n' "$session"; break; }
     done
 }
 
-# A client NOT attached to a managed session — the outer client that should host
-# the picker popup.
+client_exists() {
+  local wanted="$1"
+  tmux list-clients -F '#{client_name}' 2>/dev/null |
+    awk -v me="$wanted" '$0 == me { found=1 } END { exit !found }'
+}
+
+# Pick an ordinary client to host the picker after a nested client detaches.
+# tmux exposes no popup-owner format, so exact parent selection would require
+# an explicit mapping recorded when the popup is created.
 host_client() {
   local client session
-  tmux list-clients -F '#{client_name} #{session_name}' 2>/dev/null |
-    while read -r client session; do
-      is_managed_session "$session" || { printf '%s\n' "$client"; return; }
+  tmux list-clients -F '#{client_name}	#{session_name}' 2>/dev/null |
+    while IFS=$'\t' read -r client session; do
+      is_managed_session "$session" || { printf '%s\n' "$client"; break; }
     done
 }
 
-# If we are inside a session popup, close it (detach its client)
-sess="$(nested_session)"
-if [ -n "$sess" ]; then
-  tmux detach-client -s "$sess"
-  # Wait briefly until the popup client detaches. Do not block the binding for
-  # several seconds if tmux/client state is stale.
-  for _ in $(seq 1 20); do
-    [ -z "$(nested_session)" ] && break
-    sleep 0.05
-  done
+my_session=''
+[ -n "$invoking_client" ] && my_session="$(client_session "$invoking_client")"
+host=''
+
+if [ -n "$my_session" ] && is_managed_session "$my_session" &&
+  is_server_spawned_client "$invoking_client"; then
+  # This is an actual nested client, not a regular client switched into the
+  # managed session via choose-tree. Find its outer client before detaching it.
+  host="$(host_client)"
+  if [ -n "$host" ]; then
+    # Detach only this client. `-s <session>` would detach every client viewing
+    # the managed session, including unrelated terminals.
+    tmux detach-client -t "$invoking_client"
+    for _ in $(seq 1 20); do
+      client_exists "$invoking_client" || break
+      sleep 0.05
+    done
+  fi
+elif [ -n "$my_session" ]; then
+  # Normal pane, including a direct choose-tree switch into a managed session.
+  host="$invoking_client"
 fi
 
-# Prefer the invoking client when it isn't itself a managed (popup) session.
-# Resolve its session from list-clients output rather than display-message -c/-t:
-# while a popup is open those targets resolve to the popup client, not the one
-# that pressed the key.
-host=''
-if [ -n "$invoking_client" ]; then
-  inv_session="$(tmux list-clients -F '#{client_name} #{session_name}' 2>/dev/null |
-    while read -r client session; do
-      [ "$client" = "$invoking_client" ] && { printf '%s\n' "$session"; break; }
-    done)"
-  if [ -n "$inv_session" ] && ! is_managed_session "$inv_session"; then
-    host="$invoking_client"
-  fi
-fi
-# Fall back to scanning for any non-managed client.
+# If the invoking client disappeared or could not be resolved, retain the old
+# best-effort fallback to another ordinary client.
 [ -n "$host" ] || host="$(host_client)"
 
 # Host the picker on the outer client. -c is honored because that client has no

@@ -14,7 +14,9 @@
 #                              set, list-panes returns the PICKER fixture for
 #                              formats containing pane_current_command and the
 #                              STATUS fixture otherwise
-#   TMUX_MOCK_LIST_CLIENTS     output for list-clients
+#   TMUX_MOCK_LIST_CLIENTS     tab-separated client_name, session_name,
+#                              client_pid rows
+#   TMUX_MOCK_SERVER_PID       value for the #{pid} server-pid format
 #   TMUX_MOCK_HAS_SESSION      "yes" to make every has-session succeed
 #   TMUX_MOCK_EXISTING_SESSIONS space-separated session names that exist
 #   TMUX_MOCK_CURRENT_SESSION  session name for '#S' display-message formats
@@ -162,6 +164,8 @@ run_group() {
         printf '%s' "${TMUX_MOCK_PANE_VISIBLE:-0 0 0}"
       elif [[ "$joined" == *'#{session_name}'* ]]; then
         printf '%s' "${TMUX_MOCK_PANE_SESSION:-${TMUX_MOCK_CURRENT_SESSION:-}}"
+      elif [[ "$joined" == *'#{pid}'* ]]; then
+        printf '%s' "${TMUX_MOCK_SERVER_PID:-}"
       elif [[ "$joined" == *'#S'* ]]; then
         printf '%s' "${TMUX_MOCK_CURRENT_SESSION:-}"
       else
@@ -240,7 +244,17 @@ case "$cmd" in
     fi
     ;;
   list-clients)
-    printf '%s' "${TMUX_MOCK_LIST_CLIENTS:-}"
+    joined=" $* "
+    while IFS=$'\t' read -r client session pid; do
+      [ -n "$client" ] || continue
+      if [[ "$joined" == *'#{client_pid}'* ]]; then
+        printf '%s\t%s\n' "$client" "$pid"
+      elif [[ "$joined" == *'#{session_name}'* ]]; then
+        printf '%s\t%s\n' "$client" "$session"
+      else
+        printf '%s\n' "$client"
+      fi
+    done <<< "${TMUX_MOCK_LIST_CLIENTS:-}"
     ;;
   has-session)
     target="$(target_arg "$@" || true)"
@@ -329,6 +343,21 @@ fi
 
 if [ "${1:-}" = '-o' ] && [ "${2:-}" = 'comm=' ] && [ "${3:-}" = '-p' ]; then
   kv_get "${TMUX_MOCK_PS_COMM:-}" "${4:-}" || true
+  exit 0
+fi
+
+if [ "${1:-}" = '-o' ] && [ "${2:-}" = 'ppid=' ] && [ "${3:-}" = '-p' ]; then
+  wanted="${4:-}"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    parent="${line%%=*}"
+    for child in ${line#*=}; do
+      if [ "$child" = "$wanted" ]; then
+        printf '%s\n' "$parent"
+        exit 0
+      fi
+    done
+  done <<< "${TMUX_MOCK_PS_CHILDREN:-}"
   exit 0
 fi
 
