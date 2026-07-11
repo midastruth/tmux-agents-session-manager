@@ -24,6 +24,10 @@
 #                         the spinner. When work drops to zero it clears the
 #                         working flag and forces a re-eval so tmux switches back
 #                         to the zero-fork cached branch.
+#   status.sh --expire N  Refresh only if N is still the next scheduled state
+#                         expiry. Used internally by a one-shot tmux run-shell
+#                         timer so blocked states (and non-animated working
+#                         states) honor @agent_state_ttl without idle polling.
 #
 # Counts self-reported agent states only. Managed agent sessions are identified
 # by the configured session prefix; manual panes are counted only when an agent
@@ -100,11 +104,13 @@ export AGENT_SESSION_PREFIX
 mode=print
 fallback=""
 fallback_host=off
+expiry_token=''
 case "${1:-}" in
 --or)      fallback="${2:-}" ;;
 --or-host) fallback_host=on ;;
 --refresh) mode=refresh ;;
 --animate) mode=animate ;;
+--expire)  mode=expire; expiry_token="${2:-}" ;;
 esac
 
 fallback_text() {
@@ -121,6 +127,15 @@ is_numeric() {
   *)           return 0 ;;
   esac
 }
+
+# Delayed timers cannot be cancelled by tmux. Treat the scheduled epoch as a
+# generation token so a newer state report can invalidate an older timer at
+# negligible cost, before it scans any sessions or panes.
+if [ "$mode" = expire ]; then
+  is_numeric "$expiry_token" || exit 0
+  scheduled_expiry="$(tmux show-option -gqv @agent_status_expiry_at 2>/dev/null)" || exit 1
+  [ "$scheduled_expiry" = "$expiry_token" ] || exit 0
+fi
 
 state_is_expired() {
   local at="$1"
@@ -149,17 +164,30 @@ seg() {
 # mode can share it.
 SUMMARY=""
 WORKING_COUNT=0
+NEXT_EXPIRY_AT=""
 
 compute_summary() {
   local working=0 done_=0 blocked=0 idle=0 total=0
 
   count_state() {
-    local state="$1" at="${2:-}"
+    local state="$1" at="${2:-}" expires
     # TTL is only for states that can become stale after an unclean crash/kill.
     # A completed-but-unseen turn must remain visible until the user opens it
     # and explicitly marks it seen.
     case "$state" in
-    working|blocked) state_is_expired "$at" && return 0 ;;
+    working|blocked)
+      state_is_expired "$at" && return 0
+      # Cache mode normally has no polling. Remember the earliest future expiry
+      # so a one-shot tmux timer can remove this state at at+TTL+1 (expiry uses
+      # a strict greater-than comparison) even for blocked/non-animated work.
+      if is_numeric "$state_ttl" && [ "$state_ttl" -gt 0 ] && is_numeric "$at"; then
+        expires=$((at + state_ttl + 1))
+        if [ "$expires" -gt "$status_now" ] &&
+          { [ -z "$NEXT_EXPIRY_AT" ] || [ "$expires" -lt "$NEXT_EXPIRY_AT" ]; }; then
+          NEXT_EXPIRY_AT="$expires"
+        fi
+      fi
+      ;;
     esac
     case "$state" in
     working) working=$((working + 1)) ;;
@@ -389,7 +417,7 @@ print)
     fallback_text
   fi
   ;;
-refresh|animate)
+refresh|animate|expire)
   # Keep polling (and thus animating) only while there is at least one working
   # agent AND animation is enabled. Otherwise clear the flag so tmux evaluates
   # the status-right condition as false and stops forking this script entirely.
@@ -398,10 +426,24 @@ refresh|animate)
     working_flag=1
   fi
   # Read the previous cache so a no-op refresh (same badge reported again by a
-  # chatty integration) can skip the status-line redraw below.
+  # chatty integration) can skip the status-line redraw below. Also read the
+  # currently scheduled expiry; unchanged state must not enqueue another timer
+  # on every animation frame.
   prev_cache="$(tmux show-option -gqv @agent_status_cache 2>/dev/null)" || exit 1
+  prev_expiry="$(tmux show-option -gqv @agent_status_expiry_at 2>/dev/null)" || exit 1
+
+  if [ -n "$NEXT_EXPIRY_AT" ] && [ "$NEXT_EXPIRY_AT" != "$prev_expiry" ]; then
+    delay=$((NEXT_EXPIRY_AT - status_now))
+    [ "$delay" -gt 0 ] || delay=1
+    status_q=$(printf '%q' "$DIR/status.sh")
+    # tmux owns the delayed job, so this does not leave a shell sleeping for up
+    # to six hours. Old jobs are harmless: --expire validates the epoch token.
+    tmux run-shell -b -d "$delay" "$status_q --expire $NEXT_EXPIRY_AT" 2>/dev/null || exit 1
+  fi
+
   tmux set-option -g @agent_status_cache "$SUMMARY" \
-    \; set-option -g @agent_status_working "$working_flag" 2>/dev/null || exit 1
+    \; set-option -g @agent_status_working "$working_flag" \
+    \; set-option -g @agent_status_expiry_at "$NEXT_EXPIRY_AT" 2>/dev/null || exit 1
 
   if [ "$mode" = animate ]; then
     printf '%s' "$SUMMARY"

@@ -271,6 +271,48 @@ assert_contains 'status.sh --refresh caches the summary' "$log_contents" $'set-o
 assert_contains 'status.sh --refresh sets working flag when working' "$log_contents" $'set-option\t-g\t@agent_status_working\t1'
 assert_contains 'status.sh --refresh forces a client redraw' "$log_contents" $'refresh-client\t-S'
 
+# Cache mode must schedule a one-shot refresh for TTL expiry. Blocked states do
+# not animate, so without this timer their cached badge would otherwise remain
+# forever even after @agent_state_ttl elapsed.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+timer_at="$(date +%s)"
+timer_expiry=$((timer_at + 61))
+TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$timer_at"
+run_bash 'scripts/status.sh --refresh' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh schedules a one-shot blocked-state expiry refresh' \
+  "$log_contents" $'run-shell\t-b\t-d\t'
+assert_contains 'status.sh records the scheduled expiry generation' \
+  "$log_contents" $'set-option\t-g\t@agent_status_expiry_at\t'"$timer_expiry"
+assert_contains 'status.sh expiry timer carries its generation token' \
+  "$log_contents" "--expire $timer_expiry"
+
+# A superseded delayed job must exit without replacing the cache.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+TMUX_MOCK_OPTIONS=$'@agent_status_expiry_at=123'
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tblocked\t1'
+run_bash 'scripts/status.sh --expire 122' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'status.sh ignores a stale expiry timer' \
+  "$log_contents" $'set-option\t-g\t@agent_status_cache'
+
+# When the current timer fires, the expired state disappears and the scheduled
+# epoch is cleared, invalidating any duplicate delayed jobs.
+reset_mocks
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+due_now="$(date +%s)"
+due_at=$((due_now - 61))
+TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$due_now"
+TMUX_MOCK_LIST_SESSIONS="agent-a	blocked	$due_at"
+run_bash "scripts/status.sh --expire $due_now" >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh expiry timer removes an expired cached state' \
+  "$log_contents" $'set-option\t-g\t@agent_status_cache\t\t;'
+assert_contains 'status.sh expiry timer clears its generation' \
+  "$log_contents" $'set-option\t-g\t@agent_status_expiry_at\t'
+
 # status.sh --refresh: cache updates are authoritative, but the redraw can fail
 # in background hook contexts with no current client. That failure must not make
 # the hook fail after the cache was successfully published.
@@ -293,7 +335,7 @@ TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
 TMUX_MOCK_LIST_SESSIONS=$'agent-a\tworking'
 run_bash 'scripts/status.sh --refresh' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'status.sh --refresh leaves flag clear when animation off' "$log_contents" $'set-option\t-g\t@agent_status_working\t\n'
+assert_contains 'status.sh --refresh leaves flag clear when animation off' "$log_contents" $'set-option\t-g\t@agent_status_working\t\t;'
 
 # status.sh --refresh: no working agents -> working flag cleared to empty, so
 # tmux stops forking the animate branch entirely.
@@ -302,7 +344,7 @@ TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off)"
 TMUX_MOCK_LIST_SESSIONS=$'agent-a\tdone\nagent-b\tidle'
 run_bash 'scripts/status.sh --refresh' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'status.sh --refresh clears working flag when idle' "$log_contents" $'set-option\t-g\t@agent_status_working\t\n'
+assert_contains 'status.sh --refresh clears working flag when idle' "$log_contents" $'set-option\t-g\t@agent_status_working\t\t;'
 
 # status.sh --animate: prints the summary AND caches it (drives the spinner).
 reset_mocks
