@@ -36,7 +36,9 @@ is_server_spawned_client() {
   while [ "$pid" -gt 1 ] 2>/dev/null; do
     parent_pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
     [ "$parent_pid" = "$server_pid" ] && return 0
-    [ -n "$parent_pid" ] && [ "$parent_pid" != "$pid" ] || break
+    if [ -z "$parent_pid" ] || [ "$parent_pid" = "$pid" ]; then
+      break
+    fi
     pid="$parent_pid"
   done
   return 1

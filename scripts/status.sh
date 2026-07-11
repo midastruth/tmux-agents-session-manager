@@ -251,7 +251,7 @@ EOF
       if ! pane_state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null)"; then
         continue
       fi
-      if [ "$pane_state" = done ] && pane_target_is_visible "$pane"; then
+      if [ "$pane_state" = "done" ] && pane_target_is_visible "$pane"; then
         return 0
       fi
     done <<< "$panes"
@@ -270,7 +270,7 @@ EOF
     [ -z "$s" ] && continue
     is_managed_session "$s" || continue
     [ -n "$state" ] || continue
-    if [ "$state" = done ] && managed_done_is_visible "$s" "$agent_pane"; then
+    if [ "$state" = "done" ] && managed_done_is_visible "$s" "$agent_pane"; then
       state=idle
     fi
     count_state "$state" "$at"
@@ -354,7 +354,7 @@ EOF
     flush_pane_state() {
       [ -n "$current_pane" ] || return 0
       [ -n "$pane_state" ] || return 0
-      if [ "$pane_state" = done ] && [ "$pane_visible" = 1 ]; then
+      if [ "$pane_state" = "done" ] && [ "$pane_visible" = 1 ]; then
         pane_state=idle
       fi
       count_state "$pane_state" "$pane_at"
