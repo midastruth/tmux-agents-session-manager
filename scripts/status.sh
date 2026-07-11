@@ -480,6 +480,19 @@ refresh|animate|expire)
   else
     # Stage values, then publish only if no refresh or other animation changed
     # the revision after this invocation took its pre-scan snapshot.
+    retry_command=''
+    retry_delay=''
+    if [ "$mode" = expire ]; then
+      # If this scan loses the publication race, re-arm the consumed timer with
+      # its original identity. Store the shell-escaped command in a tmux option
+      # rather than interpolating it inside another quoted tmux command; nested
+      # single quotes would break paths whose printf %q form contains escapes.
+      retry_delay=$((expiry_token - status_now))
+      [ "$retry_delay" -gt 0 ] || retry_delay=1
+      status_q=$(printf '%q' "$DIR/status.sh")
+      retry_command="$status_q --expire $expiry_token $expiry_generation"
+    fi
+
     candidate_base="@agent_status_candidate_$$"
     candidate_cache="${candidate_base}_cache"
     candidate_working="${candidate_base}_working"
@@ -487,12 +500,14 @@ refresh|animate|expire)
     candidate_generation="${candidate_base}_generation"
     candidate_revision="${candidate_base}_revision"
     candidate_timer="${candidate_base}_timer"
+    candidate_retry="${candidate_base}_retry"
     tmux set-option -g "$candidate_cache" "$SUMMARY" \
       \; set-option -g "$candidate_working" "$working_flag" \
       \; set-option -g "$candidate_expiry" "$NEXT_EXPIRY_AT" \
       \; set-option -g "$candidate_generation" "$next_expiry_generation" \
       \; set-option -g "$candidate_revision" "$next_revision" \
-      \; set-option -g "$candidate_timer" "${timer_command:-}" 2>/dev/null || exit 1
+      \; set-option -g "$candidate_timer" "${timer_command:-}" \
+      \; set-option -g "$candidate_retry" "$retry_command" 2>/dev/null || exit 1
 
     commit_command=''
     if [ "$schedule_expiry" = on ]; then
@@ -510,11 +525,7 @@ refresh|animate|expire)
       # If only the publication revision changed while this one-shot callback
       # was scanning, the timer was consumed but remains responsible for the
       # same epoch. Re-arm it instead of orphaning automatic expiry.
-      retry_delay=$((expiry_token - status_now))
-      [ "$retry_delay" -gt 0 ] || retry_delay=1
-      status_q=$(printf '%q' "$DIR/status.sh")
-      retry_command="$status_q --expire $expiry_token $expiry_generation"
-      stale_command="if-shell -F \"#{&&:#{==:#{@agent_status_expiry_at},$expiry_token},#{==:#{@agent_status_expiry_generation},$expiry_generation}}\" \"run-shell -b -d $retry_delay '$retry_command'\" '' ; display-message -p stale"
+      stale_command="if-shell -F \"#{&&:#{==:#{@agent_status_expiry_at},$expiry_token},#{==:#{@agent_status_expiry_generation},$expiry_generation}}\" \"run-shell -b -d $retry_delay \\\"#{${candidate_retry}}\\\"\" '' ; display-message -p stale"
     else
       commit_condition="#{==:#{@agent_status_revision},$prev_revision}"
       stale_command='display-message -p stale'
@@ -527,7 +538,8 @@ refresh|animate|expire)
       \; set-option -gu "$candidate_expiry" \
       \; set-option -gu "$candidate_generation" \
       \; set-option -gu "$candidate_revision" \
-      \; set-option -gu "$candidate_timer" 2>/dev/null || exit 1
+      \; set-option -gu "$candidate_timer" \
+      \; set-option -gu "$candidate_retry" 2>/dev/null || exit 1
     [ "$commit_rc" -eq 0 ] || exit 1
     if [ "$commit_result" != committed ] && [ "$mode" = expire ]; then
       exit 0

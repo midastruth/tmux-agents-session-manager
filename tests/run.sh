@@ -357,6 +357,27 @@ assert_not_contains 'status.sh superseded expiry timer does not commit staged ca
 assert_contains 'status.sh superseded expiry scan retains a same-identity retry' \
   "$log_contents" "--expire $due_now $due_generation"
 
+# Retry publication has two tmux parsing layers. Keep the printf-%q command in a
+# staged option so a plugin path containing spaces is not wrapped in shell
+# single quotes that turn its backslashes into literal path characters.
+reset_mocks
+space_scripts="$TMP_ROOT/plugin with space/scripts"
+mkdir -p "$space_scripts"
+cp "$ROOT/scripts/status.sh" "$ROOT/scripts/helpers.sh" "$space_scripts/"
+TMUX_MOCK_STATUS_OPTIONS="$(status_options agent- off off off 60)"
+TMUX_MOCK_OPTIONS="@agent_status_expiry_at=$due_now
+@agent_status_expiry_generation=$due_generation"
+TMUX_MOCK_LIST_SESSIONS=$'agent-a\tblocked\t'"$due_at"
+TMUX_MOCK_IF_SHELL_RESULT=stale
+bash "$space_scripts/status.sh" --expire "$due_now" "$due_generation" >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status.sh stages a shell-escaped retry for plugin paths with spaces' \
+  "$log_contents" 'plugin\ with\ space/scripts/status.sh --expire'
+assert_contains 'status.sh stale branch references the staged retry command' \
+  "$log_contents" '_retry}'
+assert_not_contains 'status.sh stale branch does not single-quote a percent-q path' \
+  "$log_contents" "'${space_scripts// /\\ }/status.sh --expire"
+
 # A one-shot timer may fire before its wall-clock epoch after the clock moves
 # backwards. Since that timer has already been consumed, --expire must re-arm
 # the unchanged epoch instead of relying on the old token equality.
