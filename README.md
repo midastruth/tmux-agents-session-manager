@@ -294,7 +294,7 @@ set -g @agent_popup_height   '90%'      # popup height
 Status-line options (only relevant with `@agent_status on` or manual embedding):
 
 ```tmux
-set -g @agent_status            'off'   # 'on' auto-appends the summary to status-right
+set -g @agent_status            'on'    # default: auto-appends the summary to status-right; set 'off' to disable
 set -g @agent_status_interval   '1'     # max seconds between refreshes
 set -g @agent_status_show_idle  'off'   # also count idle sessions
 set -g @agent_status_color      'off'   # emit #[fg=...] colours
