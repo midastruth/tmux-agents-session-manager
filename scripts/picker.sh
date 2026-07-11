@@ -89,14 +89,15 @@ split_classify() {
 }
 
 emit_managed_rows() {
-  local now s state at path cmd tool name rank label desc ago
+  local now s state at path cmd tool instance name rank label desc ago
   now=$(picker_now)
-  tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}	#{pane_current_path}	#{@agent_tool}	#{pane_current_command}' 2>/dev/null |
-    while IFS=$'\t' read -r s state at path tool cmd; do
+  tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}	#{pane_current_path}	#{@agent_tool}	#{pane_current_command}	#{@agent_instance}' 2>/dev/null |
+    while IFS=$'\t' read -r s state at path tool cmd instance; do
       is_managed_session "$s" || continue
       name=${path##*/}
       # The agent recorded at launch, falling back to whatever runs in the pane.
       [ -n "$tool" ] || tool=${cmd##*/}
+      [ -n "$instance" ] && tool="${tool}-${instance}"
       split_classify "$state"
       ago="$(humanize_ago "$at" "$now")"
       # rank \t kind \t target \t label \t name \t age \t path \t desc \t tool

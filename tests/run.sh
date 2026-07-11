@@ -33,8 +33,8 @@ reset_mocks() {
   unset TMUX_MOCK_OPTIONS TMUX_MOCK_TARGET_OPTIONS TMUX_MOCK_STATUS_OPTIONS \
     TMUX_MOCK_LIST_SESSIONS TMUX_MOCK_LIST_PANES TMUX_MOCK_LIST_CLIENTS \
     TMUX_MOCK_LIST_PANES_PICKER TMUX_MOCK_LIST_PANES_STATUS \
-    TMUX_MOCK_HAS_SESSION TMUX_MOCK_CURRENT_SESSION TMUX_MOCK_PANE_SESSION \
-    TMUX_MOCK_PANE_VISIBLE TMUX_MOCK_FAIL_TARGETS \
+    TMUX_MOCK_HAS_SESSION TMUX_MOCK_EXISTING_SESSIONS TMUX_MOCK_CURRENT_SESSION \
+    TMUX_MOCK_PANE_SESSION TMUX_MOCK_PANE_VISIBLE TMUX_MOCK_FAIL_TARGETS \
     TMUX_MOCK_FAIL_REFRESH_CLIENT \
     TMUX_MOCK_PS_CHILDREN TMUX_MOCK_PS_COMM \
     AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS TMUX_PANE \
@@ -321,11 +321,11 @@ TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
 # the rendered age (0s) flaky.
 picker_now="$(date +%s)"
 PICKER_NOW="$picker_now"
-TMUX_MOCK_LIST_SESSIONS="agent-pi	blocked	${picker_now}	${picker_home}/proj	pi	pi
-other	done	${picker_now}	/tmp/x		bash"
+TMUX_MOCK_LIST_SESSIONS="agent-pi	blocked	${picker_now}	${picker_home}/proj	pi	pi	1
+other	done	${picker_now}	/tmp/x		bash	"
 out="$(run_bash 'scripts/picker.sh --list')"
 assert_contains 'picker --list emits managed session row identity' "$out" $'session\tagent-pi\t🔴 blocked\tproj\t0s'
-assert_contains 'picker --list shortens home path and describes state' "$out" $'~/proj\tneeds input\tpi'
+assert_contains 'picker --list shortens home path and shows numbered tool' "$out" $'~/proj\tneeds input\tpi-1'
 assert_not_contains 'picker --list ignores unmanaged sessions' "$out" $'session\tother'
 
 # picker.sh age column scales seconds/minutes/hours/days.
@@ -525,18 +525,41 @@ TMUX_MOCK_CURRENT_SESSION='work'
 TMUX_MOCK_HAS_SESSION='no'
 run_bash 'scripts/launch.sh /tmp/project @9' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'launch.sh creates default session from path hash' "$log_contents" $'new-session\t-d\t-s\tagent-6533d8b9\t-c\t/tmp/project'
-assert_contains 'launch.sh records origin window' "$log_contents" $'set-option\t-t\tagent-6533d8b9\t@agent_origin\t@9'
-assert_contains 'launch.sh opens popup attached to session' "$log_contents" $'display-popup\t-w\t90%\t-h\t90%\t-E\ttmux attach-session -t agent-6533d8b9'
+assert_contains 'launch.sh creates numbered default session from path hash' "$log_contents" $'new-session\t-d\t-s\tagent-6533d8b9-1\t-c\t/tmp/project'
+assert_contains 'launch.sh records instance number' "$log_contents" $'set-option\t-t\tagent-6533d8b9-1\t@agent_instance\t1'
+assert_contains 'launch.sh records origin window' "$log_contents" $'set-option\t-t\tagent-6533d8b9-1\t@agent_origin\t@9'
+assert_contains 'launch.sh opens popup attached to numbered session' "$log_contents" $'display-popup\t-w\t90%\t-h\t90%\t-E\ttmux attach-session -t agent-6533d8b9-1'
+
+reset_mocks
+TMUX_MOCK_CURRENT_SESSION='work'
+TMUX_MOCK_EXISTING_SESSIONS='agent-pi-6533d8b9-1 agent-pi-6533d8b9-2'
+TMUX_MOCK_OPTIONS=$'@agent_agents=pi=pi'
+run_bash 'scripts/launch.sh /tmp/project @9 pi' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'launch.sh chooses the next free instance number' "$log_contents" $'new-session\t-d\t-s\tagent-pi-6533d8b9-3\t-c\t/tmp/project'
+assert_contains 'launch.sh labels the selected agent instance' "$log_contents" $'set-option\t-t\tagent-pi-6533d8b9-3\t@agent_instance\t3'
+assert_contains 'launch.sh checks numbered sessions by exact name' "$log_contents" $'has-session\t-t\t=agent-pi-6533d8b9-1'
+
+# tmux normally treats a target as a prefix. An existing -10 must not make the
+# exact -1 name appear occupied.
+reset_mocks
+TMUX_MOCK_CURRENT_SESSION='work'
+TMUX_MOCK_EXISTING_SESSIONS='agent-pi-6533d8b9-10'
+TMUX_MOCK_OPTIONS=$'@agent_agents=pi=pi'
+run_bash 'scripts/launch.sh /tmp/project @9 pi' >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'launch.sh does not confuse instance 1 with instance 10' "$log_contents" $'new-session\t-d\t-s\tagent-pi-6533d8b9-1\t-c\t/tmp/project'
+assert_not_contains 'launch.sh does not skip free instance 1 due to prefix matching' "$log_contents" $'new-session\t-d\t-s\tagent-pi-6533d8b9-2'
 
 reset_mocks
 TMUX_MOCK_CURRENT_SESSION='work'
 TMUX_MOCK_HAS_SESSION='yes'
-TMUX_MOCK_OPTIONS=$'@agent_agents=codex=codex --fast\\npi=pi'
+TMUX_MOCK_OPTIONS=$'@agent_agents=codex=codex --fast\\npi=pi\n@agent_multiple_instances=off'
 run_bash 'scripts/launch.sh /tmp/project @9 codex' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_not_contains 'launch.sh does not recreate existing named session' "$log_contents" $'new-session\t-d\t-s\tagent-codex-6533d8b9'
-assert_contains 'launch.sh opens existing named agent session' "$log_contents" $'display-popup\t-w\t90%\t-h\t90%\t-E\ttmux attach-session -t agent-codex-6533d8b9'
+assert_not_contains 'launch.sh does not recreate existing named session when instances disabled' "$log_contents" $'new-session\t-d\t-s\tagent-codex-6533d8b9'
+assert_contains 'launch.sh checks legacy session by exact name' "$log_contents" $'has-session\t-t\t=agent-codex-6533d8b9'
+assert_contains 'launch.sh opens existing named session when instances disabled' "$log_contents" $'display-popup\t-w\t90%\t-h\t90%\t-E\ttmux attach-session -t agent-codex-6533d8b9'
 
 reset_mocks
 TMUX_MOCK_CURRENT_SESSION='work'

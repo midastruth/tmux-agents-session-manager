@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Launch (or re-attach to) an agent session for a directory, shown in a popup.
+# Launch a numbered agent session for a directory, shown in a popup.
 # Args: <dir> [origin-window-id] [agent-name]
 #   <dir> / [origin-window-id] are expanded by run-shell in the binding.
 #   [agent-name] selects an entry from @agent_agents (pi/codex/claude...).
 #   When omitted, @agent_default_command is used.
+# By default each launch creates a numbered instance. Set
+# @agent_multiple_instances off to restore one session per directory/agent.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
@@ -27,11 +29,11 @@ if [ -n "$agent" ]; then
   }
   # Namespace the session per agent so pi/codex/claude in the same directory
   # get distinct sessions instead of colliding on the same path hash.
-  session="${prefix}${agent}-$(session_hash "$path")"
+  session_base="${prefix}${agent}-$(session_hash "$path")"
 else
   # Default command, unnamespaced session.
   cmd="$(get_tmux_option @agent_default_command "$default_cmd")"
-  session="${prefix}$(session_hash "$path")"
+  session_base="${prefix}$(session_hash "$path")"
 fi
 
 if is_managed_session "$(tmux display-message -p '#S')"; then
@@ -39,23 +41,55 @@ if is_managed_session "$(tmux display-message -p '#S')"; then
   exit 0
 fi
 
+multiple_instances="$(get_tmux_option @agent_multiple_instances 'on')"
 created=0
-if ! tmux has-session -t "$session" 2>/dev/null; then
-  if tmux new-session -d -s "$session" -c "$path" "$cmd"; then
-    created=1
-  elif ! tmux has-session -t "$session" 2>/dev/null; then
+instance=''
+if [ "$multiple_instances" = on ]; then
+  # Reserve the first free numbered name. new-session itself is the atomic
+  # operation: if two launchers race for the same number, the loser retries.
+  instance=1
+  while :; do
+    session="${session_base}-${instance}"
+    if tmux has-session -t "=$session" 2>/dev/null; then
+      instance=$((instance + 1))
+      continue
+    fi
+    if tmux new-session -d -s "$session" -c "$path" "$cmd"; then
+      created=1
+      break
+    fi
+    if tmux has-session -t "=$session" 2>/dev/null; then
+      instance=$((instance + 1))
+      continue
+    fi
     tmux display-message "Failed to create agent session: $session"
     exit 0
+  done
+else
+  session="$session_base"
+  if ! tmux has-session -t "=$session" 2>/dev/null; then
+    if tmux new-session -d -s "$session" -c "$path" "$cmd"; then
+      created=1
+    elif ! tmux has-session -t "=$session" 2>/dev/null; then
+      tmux display-message "Failed to create agent session: $session"
+      exit 0
+    fi
   fi
 fi
 
 if [ "$created" -eq 1 ]; then
   tmux set-option -t "$session" @agent_state idle
   tmux set-option -t "$session" @agent_state_at "$(date +%s)"
-  # Record which agent this session runs (first token's basename of $cmd), so
-  # the picker can show pi / codex / claude side by side.
-  tool_first="${cmd%% *}"
-  tmux set-option -t "$session" @agent_tool "${tool_first##*/}"
+  # Record the selected agent and optional instance separately, so the picker
+  # can display pi-1 / pi-2 without having to parse the internal session name.
+  if [ -n "$agent" ]; then
+    tool="$agent"
+  else
+    tool_first="${cmd%% *}"
+    tool="${tool_first##*/}"
+  fi
+  tmux set-option -t "$session" @agent_tool "$tool"
+  [ -n "$instance" ] && tmux set-option -t "$session" @agent_instance "$instance"
 fi
 
 # Record which window launched it, so the picker can jump back here later.

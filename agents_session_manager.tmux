@@ -18,7 +18,8 @@ list_key="$(get_tmux_option @agent_list_key 'u')"
 # This decouples the user's status line from where the plugin lives on disk.
 tmux set-option -gq @agent_status_script "$CURRENT_DIR/scripts/status.sh"
 
-# Launch (or re-attach to) an agent session for the current pane's directory.
+# Launch an agent session for the current pane's directory. Instances are
+# numbered by default; @agent_multiple_instances off restores open-or-reattach.
 # launch_menu.sh offers a picker when multiple agents are configured via
 # @agent_agents (pi/codex/claude...), otherwise it launches directly.
 # #{pane_current_path} / #{window_id} are expanded by run-shell before the args

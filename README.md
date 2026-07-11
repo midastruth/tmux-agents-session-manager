@@ -7,14 +7,14 @@ them, see which ones are working vs. finished, and jump back to any session from
 one popup.
 
 This is a tmux plugin for people who launch coding agents per project directory.
-It keeps one nested tmux session per directory/agent and gives you a central
-picker for all of them. Out of the box it manages **pi, codex, and claude**; add
+It can keep multiple numbered nested sessions per directory/agent and gives you
+a central picker for all of them. Out of the box it manages **pi, codex, and claude**; add
 or swap agents via `@agent_agents`.
 
 ## Features
 
 - 🔢 **Central picker** (`prefix` + `u`) listing every managed agent tmux session, plus panes where a known agent (pi/codex/claude) was started manually. A tool column shows which agent each row is.
-- 🤖 **Multi-agent**: manage pi, codex, and claude side by side; `prefix` + `y` offers an agent menu, and sessions are namespaced per agent so the same directory can run more than one.
+- 🤖 **Multi-agent and multi-instance**: manage pi, codex, and claude side by side; each `prefix` + `y` launch creates a numbered instance such as `pi-1`, `pi-2`, and `pi-3` by default.
 - 🟡 **Live status** per session: `working` / `done` / `idle` (via the bundled Pi
   extension, or any agent that calls `scripts/state.sh` from a hook).
 - 👁️ **Live preview** of each session's screen in the picker.
@@ -71,7 +71,7 @@ Then press `prefix` + <kbd>I</kbd>.
 
 | Key            | Action                                                                   |
 | -------------- | ------------------------------------------------------------------------ |
-| `prefix` + `y` | Launch (or re-attach to) an agent for the current directory; shows an agent menu when more than one is configured |
+| `prefix` + `y` | Launch a numbered agent instance for the current directory; shows an agent menu when more than one is configured |
 | `prefix` + `u` | Open the agent session picker                                            |
 
 Inside the picker:
@@ -104,9 +104,12 @@ claude=claude"
   with entries like `pi (1)`, `codex (2)`, `claude (3)`. Use `Ctrl+n` /
   `Ctrl+p` to move, or number keys to select. With a single agent configured,
   or `@agent_launch_menu off`, it launches directly with no menu.
-- Sessions are **namespaced per agent** (`agent-<agent>-<hash>`), so the same
-  directory can run pi *and* codex *and* claude simultaneously without colliding.
-- The picker shows a **tool column** so each row is clearly pi, codex, or claude.
+- Sessions are **namespaced and numbered per agent**
+  (`agent-<agent>-<hash>-<instance>`), so the same directory can run pi, codex,
+  and claude—or multiple copies of any one of them—without colliding.
+- The picker shows a **tool column** with instance labels such as `pi-1` and
+  `pi-2`. Set `@agent_multiple_instances off` to restore the legacy behavior:
+  one reusable session per directory/agent.
 - `@agent_detect_commands` controls which manually-started panes are auto-listed.
 - `@agent_detect_wrappers` controls which wrapper commands (default `node bun npx npm pnpm yarn`) are allowed to trigger a child-process scan.
 
@@ -280,6 +283,7 @@ set -g @agent_list_key       'u'        # prefix key: open the picker
 set -g @agent_default_command 'pi'       # pi's command; default loads bundled extension
 set -g @agent_agents         '...'      # name=command registry of launchable agents (see below)
 set -g @agent_launch_menu    'on'       # 'off' skips the agent menu on prefix+y
+set -g @agent_multiple_instances 'on'   # 'off' reuses one session per directory/agent
 set -g @agent_detect_commands 'pi codex claude'  # manual-pane commands to auto-list
 set -g @agent_detect_wrappers 'node bun npx npm pnpm yarn' # wrappers to scan for child agents
 set -g @agent_session_prefix 'agent-'   # tmux session name prefix
@@ -384,9 +388,10 @@ set -g @agent_default_command "pi -e '/path/to/tmux-agents-session-manager/exten
 ## How it works
 
 - The **launcher** picks an agent from `@agent_agents` (or launches the default),
-  creates a detached `agent-<agent>-<hash-of-dir>` tmux session running that agent,
-  records the origin window in `@agent_origin` and the agent in `@agent_tool`, then
-  attaches to it in a popup.
+  creates a detached `agent-<agent>-<hash-of-dir>-<instance>` tmux session running
+  that agent, records the origin window, agent, and instance, then attaches to it
+  in a popup. With `@agent_multiple_instances off`, it instead opens or reuses the
+  unnumbered session.
 - The bundled **Pi extension** updates `@agent_state` / `@agent_state_at` as Pi starts
   and finishes turns; other agents can do the same via `scripts/state.sh`.
 - The **picker** lists tmux sessions matching the prefix and non-prefixed panes

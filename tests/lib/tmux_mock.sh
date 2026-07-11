@@ -15,7 +15,8 @@
 #                              formats containing pane_current_command and the
 #                              STATUS fixture otherwise
 #   TMUX_MOCK_LIST_CLIENTS     output for list-clients
-#   TMUX_MOCK_HAS_SESSION      "yes" to make has-session succeed
+#   TMUX_MOCK_HAS_SESSION      "yes" to make every has-session succeed
+#   TMUX_MOCK_EXISTING_SESSIONS space-separated session names that exist
 #   TMUX_MOCK_CURRENT_SESSION  session name for '#S' display-message formats
 #   TMUX_MOCK_PANE_SESSION     session name for '#{session_name}' formats
 #   TMUX_MOCK_PANE_VISIBLE     output for '#{session_attached}' formats
@@ -242,7 +243,24 @@ case "$cmd" in
     printf '%s' "${TMUX_MOCK_LIST_CLIENTS:-}"
     ;;
   has-session)
-    [ "${TMUX_MOCK_HAS_SESSION:-no}" = yes ]
+    target="$(target_arg "$@" || true)"
+    if [ "${TMUX_MOCK_HAS_SESSION:-no}" = yes ]; then
+      exit 0
+    fi
+    if [[ "$target" == =* ]]; then
+      # A leading '=' is tmux's exact target syntax.
+      target="${target#=}"
+      case " ${TMUX_MOCK_EXISTING_SESSIONS:-} " in
+      *" $target "*) exit 0 ;;
+      *) exit 1 ;;
+      esac
+    fi
+    # Without '=', model tmux's normal prefix matching. This matters for tests
+    # such as instance -1 versus an existing instance -10.
+    for existing in ${TMUX_MOCK_EXISTING_SESSIONS:-}; do
+      [[ "$existing" == "$target"* ]] && exit 0
+    done
+    exit 1
     ;;
   refresh-client)
     [ -z "${TMUX_MOCK_FAIL_REFRESH_CLIENT:-}" ]
