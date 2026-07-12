@@ -129,7 +129,7 @@ emit_managed_rows() {
 }
 
 emit_manual_rows() {
-  local now panes s pane cmd ppid path state at opts line base name rank label desc ago daemon_state event_q
+  local now panes s pane cmd ppid path state at opts line base name rank label desc ago daemon_state
   now=$(picker_now)
   panes="$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null)" || return 1
 
@@ -179,10 +179,6 @@ emit_manual_rows() {
         "@agent_state_at "*) at="${line#@agent_state_at }" ;;
         esac
       done <<< "$opts"
-    fi
-    if [ "$base" = claude ]; then
-      event_q="$(printf '%q' "$DIR/event.sh")"
-      tmux run-shell -b "$event_q claude-discovered $(printf '%q' "$pane") $(printf '%q' "$s")" 2>/dev/null || true
     fi
     if [ -n "$state" ]; then
       split_classify "$state"

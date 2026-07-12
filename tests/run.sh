@@ -316,6 +316,8 @@ assert_contains 'picker --list validates closed pane without quiet target suppre
 assert_not_contains 'picker --list no longer uses quiet option query for race detection' "$log_contents" $'show-options\t-pq\t-t\t%1'
 
 # state.sh
+AGENT_TOOL=pi
+export AGENT_TOOL
 reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_status=on'
 TMUX_PANE='%1'
@@ -403,6 +405,7 @@ run_bash 'scripts/state.sh working' >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'state.sh does not downgrade working on watched managed pane' "$log_contents" $'set-option\t-p\t-t\t%1\t@agent_state\tworking'
 assert_not_contains 'state.sh does not turn working into idle when watched' "$log_contents" $'@agent_state\tidle'
+unset AGENT_TOOL
 
 # launch.sh
 reset_mocks
@@ -456,10 +459,10 @@ assert_not_contains 'launch.sh does not open popup for unknown agent' "$log_cont
 
 # daemon client / lifecycle integration
 reset_mocks
-run_bash 'scripts/event.sh claude-discovered %7 work session-7' >/dev/null
+run_bash 'scripts/event.sh seen-pane %7' >/dev/null
 log_contents="$(<"$DAEMON_LOG")"
-assert_contains 'event client sends ClaudeDiscovered' "$log_contents" '"type":"ClaudeDiscovered"'
-assert_contains 'event client sends stable Claude session id' "$log_contents" '"session_id":"session-7"'
+assert_contains 'event client sends Seen' "$log_contents" '"type":"Seen"'
+assert_contains 'event client sends seen pane id' "$log_contents" '"pane_id":"%7"'
 
 reset_mocks
 run_bash 'scripts/event.sh exited-pane %8' >/dev/null

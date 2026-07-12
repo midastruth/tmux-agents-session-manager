@@ -97,11 +97,6 @@ agent_pane="$(tmux list-panes -t "$session" -F '#{pane_id}' 2>/dev/null | head -
 if [ "$created" -eq 1 ] && [ -n "$agent_pane" ]; then
   tmux set-option -p -t "$agent_pane" @agent_tool "$tool"
 fi
-if [ "$tool" = claude ] && [ -n "$agent_pane" ]; then
-  event_q="$(printf '%q' "$DIR/event.sh")"
-  tmux run-shell -b "$event_q claude-started $(printf '%q' "$agent_pane") $(printf '%q' "$session")"
-fi
-
 # Record which window launched it, so the picker can jump back here later.
 [ -n "$window" ] && tmux set-option -t "$session" @agent_origin "$window"
 

@@ -19,7 +19,9 @@ if [ -z "$tool" ] && [ -n "$session" ] && is_managed_session "$session"; then
   tool="$(tmux show-options -qv -t "$session" @agent_tool 2>/dev/null || true)"
 fi
 [ -n "$tool" ] || tool="${AGENT_TOOL:-codex}"
-[ "$tool" != claude ] || exit 0
+case "$tool" in
+  claude|codex) exit 0 ;;
+esac
 
 # Hook subprocesses share their long-lived agent parent's process start identity.
 # This survives repeated hook calls while rotating when the pane id is reused.

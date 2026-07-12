@@ -15,16 +15,16 @@ or swap agents via `@agent_agents`.
 
 - 🔢 **Central picker** (`prefix` + `u`) listing every managed agent tmux session, plus panes where a known agent (pi/codex/claude) was started manually. A tool column shows which agent each row is.
 - 🤖 **Multi-agent and multi-instance**: manage pi, codex, and claude side by side; each `prefix` + `y` launch creates a numbered instance such as `pi-1`, `pi-2`, and `pi-3` by default.
-- 🟡 **Live status** per session: `working` / `done` / `idle` (via the bundled Pi
-  extension, or any agent that calls `scripts/state.sh` from a hook).
+- 🟡 **Live status** per session: `blocked` / `working` / `done` / `idle` (Pi
+  events plus Herdr-style Codex/Claude screen detection).
 - 👁️ **Live preview** of each session's screen in the picker.
 - 🎯 **Smart jump** back to the window where the session was launched.
 - 🚀 **Launcher** (`prefix` + `y`) to open or attach an agent session for the
   current directory.
 - ❌ **Quick kill** (`ctrl-x`) from the picker.
 - 📊 **Status-line summary**: a compact `agents 1● 2✦ 1✓` badge in
-  `status-right` counting self-reported blocked / working / done states without
-  scanning process trees on every refresh.
+  `status-right` counting blocked / working / done states from the daemon cache
+  without forking from the status line.
 
 ## Prerequisites
 
@@ -127,17 +127,18 @@ claude=claude"
 - `@agent_detect_wrappers` controls which wrapper commands (default `node bun npx npm pnpm yarn`) are allowed to trigger a child-process scan.
 
 Make sure each agent's command is on your `PATH` (`pi`, `codex`, `claude`).
-Pi reports through the bundled extension, Codex reports when its hooks are
-configured, and Claude uses daemon polling as described below.
+Pi reports through the bundled extension. Codex and Claude are detected by the
+daemon from their tmux pane process, terminal title, and captured screen text.
 
 ## Unified status daemon
 
 A single-thread-owned Rust daemon is the authoritative runtime state center for
-each tmux server. It uses a private mode-0600 Unix socket, restores Pi/Codex
-mirror options once at startup, and then updates state only from events. The
-Pi extension and `scripts/state.sh` continue writing tmux mirror options so the
-daemon can recover after restart and the picker can display reliable state if a
-daemon snapshot is temporarily unavailable.
+each tmux server. It uses a private mode-0600 Unix socket, restores Pi mirror
+options once at startup, accepts Pi lifecycle events, and periodically applies
+Herdr-style screen detection for Codex and Claude. The Pi extension and
+`scripts/state.sh` continue writing tmux mirror options so the daemon can recover
+after restart and the picker can display reliable state if a daemon snapshot is
+temporarily unavailable.
 
 | Agent event | State |
 | --- | --- |
@@ -152,70 +153,37 @@ picker actions and an appended `session-closed` tmux hook when available.
 `after-kill-pane` is intentionally not used because tmux does not expose the
 removed pane identity there. Existing hooks are never overwritten.
 
-### Pi and Codex reporting
+### Pi reporting
 
 The default Pi command loads `extensions/tmux-state.ts`. Each extension process
 creates a fresh process generation and sends monotonic sequences, preventing an
 old event or reused pane id from overwriting a newer process.
 
-Codex can report through hooks:
+`state.sh` is kept for Pi-compatible hooks. Codex and Claude reports sent through
+`state.sh` are ignored because their state is owned by the screen detector.
 
-```sh
-/path/to/plugin/scripts/state.sh working
-/path/to/plugin/scripts/state.sh done
-```
+### Codex and Claude screen detection
 
-For Codex, configure these command hooks (replace the plugin path):
+The daemon scans tmux panes every `@agent_screen_interval_ms`. A pane is a
+Codex/Claude candidate when its configured `@agent_tool`, current command, or an
+allowed wrapper descendant matches `codex`, `claude`, or `claude-code`.
 
-```toml
-[[hooks.SessionStart]]
-[[hooks.SessionStart.hooks]]
-type = "command"
-command = "/path/to/tmux-agents-session-manager/scripts/state.sh idle"
-timeout = 1
+For each candidate pane the daemon reads:
 
-[[hooks.UserPromptSubmit]]
-[[hooks.UserPromptSubmit.hooks]]
-type = "command"
-command = "/path/to/tmux-agents-session-manager/scripts/state.sh working"
-timeout = 1
+- `#{pane_title}` for OSC title signals.
+- `tmux capture-pane -p -J -S -80` for recent visible text.
 
-[[hooks.Stop]]
-[[hooks.Stop.hooks]]
-type = "command"
-command = "/path/to/tmux-agents-session-manager/scripts/state.sh done"
-timeout = 1
-```
+Codex rules mirror Herdr's high-value signals: `Action Required` in the title is
+`blocked`, a Braille-spinner title is `working`, approval/answer prompts after
+the last `›` prompt are `blocked`, and a non-empty non-spinner title is `idle`.
 
-`state.sh` keeps one generation for the long-lived hook parent and monotonic
-pane sequence, while preserving the watched-pane `done` to `idle` behavior.
+Claude rules mirror Herdr's screen heuristics: a Braille-spinner title is
+`working`, visible permission/menu prompts are `blocked`, a live `❯` prompt box
+is `idle`, transcript/model-picker views are ignored, and a `✳` title is `idle`.
 
-### Claude adaptive polling
-
-A plugin-launched Claude sends `ClaudeStarted`; a manual Claude found by the
-picker sends `ClaudeDiscovered`. Therefore a manually started Claude that has
-never been shown in the picker is **not guaranteed to enter the status line**.
-Claude uses stable `sessionId` identity, never PID identity.
-
-Only one Claude query can be in flight. The default intervals are 3 seconds
-while working and 10 seconds while idle/waiting. A newly launched target gets
-three successful-query attempts to register; after it has been observed, a
-successful query that no longer returns it removes the target and stops polling
-when no Claude targets remain. Deadlines start at query completion. Timeout, non-zero exit, and JSON
-errors preserve the last successful states and apply bounded backoff. Timeout
-kills and reaps the child process group.
-
-The collector runs the user-verified command `claude agents --json`. Its real
-records contain `pid`, `cwd`, `kind`, `startedAt`, `sessionId`, `name`, and
-`status`. Only `kind=interactive` is used. `busy` maps to `working`, `waiting`
-maps to `blocked`, and `idle` normally maps to `idle`. If the previous daemon
-state was `working`, an unwatched transition to `idle` becomes `done` until the
-pane is opened; a watched transition becomes `idle`. The collector resolves
-each PID to its TTY and then matches that TTY to a tmux pane/session. PID is
-used only for this live association; `sessionId` remains the long-lived
-identity. Each poll starts one `claude agents --json`, one full-table `ps`
-snapshot, and one `tmux list-panes` query regardless of the number of returned
-agents; it never starts one `ps` per agent.
+When Codex/Claude transitions from `working` or `blocked` to `idle`, the daemon
+publishes `done` if the pane is not currently visible; opening the pane sends
+`Seen` and changes `done` to `idle`.
 
 ### Zero-fork animated status line
 
@@ -229,9 +197,9 @@ separate: a successful option update remains valid if an explicit client
 refresh fails.
 
 Animation frames are whitespace-separated; a frame itself cannot contain a
-space. The daemon validates non-empty bounded frames, a minimum 250ms animation
-interval, positive Claude intervals/timeouts, and non-negative TTL. Invalid
-reload retains the old config; successful reload immediately reconciles state.
+space. The daemon validates non-empty bounded frames, minimum 250ms animation
+and screen-detection intervals, and non-negative TTL. Invalid reload retains the
+old config; successful reload immediately reconciles state.
 
 ## Options
 
@@ -264,11 +232,8 @@ set -g @agent_status_icon_done       '✓'
 set -g @agent_status_icon_idle       '·'
 set -g @agent_status_anim_frames     '✦ ✷ ✹ ✴'
 set -g @agent_animation_interval_ms  '1000'
+set -g @agent_screen_interval_ms     '1000'
 set -g @agent_state_ttl              '259200'
-set -g @agent_claude_working_interval '3'
-set -g @agent_claude_idle_interval    '10'
-set -g @agent_claude_timeout          '2'
-set -g @agent_claude_failure_max_interval '30'
 set -g @agent_daemon_binary '/path/to/daemon/target/release/tmux-agents-state-daemon'
 ```
 

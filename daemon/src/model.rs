@@ -1,17 +1,12 @@
 use crate::protocol::{AgentState, Request};
-use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_FRAMES: usize = 64;
 const MAX_FRAME_BYTES: usize = 64;
-const MAX_PENDING_CLAUDE_MISSES: u8 = 3;
+const SCREEN_CAPTURE_HISTORY_LINES: &str = "-80";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -26,16 +21,15 @@ pub struct Config {
     pub show_idle: bool,
     pub frames: Vec<String>,
     pub animation_interval: Duration,
-    pub claude_working_interval: Duration,
-    pub claude_idle_interval: Duration,
-    pub claude_timeout: Duration,
-    pub claude_failure_max_interval: Duration,
+    pub screen_interval: Duration,
     pub state_ttl: Duration,
+    pub detect_commands: HashSet<String>,
+    pub wrapper_commands: HashSet<String>,
 }
 
 impl Config {
     pub fn load(server_socket: &str) -> Result<Self, String> {
-        let output = tmux_output(server_socket, ["show-options", "-g"])
+        let output = tmux_output(server_socket, &["show-options", "-g"])
             .ok_or("failed to read tmux global options")?;
         let mut values = HashMap::new();
         for line in output.lines() {
@@ -50,7 +44,7 @@ impl Config {
         let get = |name: &str, default: &str| {
             values
                 .get(name)
-                .filter(|v| !v.is_empty())
+                .filter(|value| !value.is_empty())
                 .map(String::as_str)
                 .unwrap_or(default)
                 .to_string()
@@ -63,42 +57,32 @@ impl Config {
             raw.parse::<u64>()
                 .map_err(|_| format!("{label} must be an integer"))
         };
+
         let working_icon = get("@agent_status_icon_working", "✦");
         let default_frames = format!("{working_icon} ✷ ✹ ✴");
         let frame_text = get("@agent_status_anim_frames", &default_frames);
         let frames: Vec<String> = frame_text.split_whitespace().map(str::to_string).collect();
         if frames.is_empty()
             || frames.len() > MAX_FRAMES
-            || frames.iter().any(|v| v.len() > MAX_FRAME_BYTES)
+            || frames.iter().any(|value| value.len() > MAX_FRAME_BYTES)
         {
             return Err("animation frames must contain 1..64 frames of at most 64 bytes".into());
         }
+
         let animation_ms = parse_u64("@agent_animation_interval_ms", 1000, "animation interval")?;
         if animation_ms < 250 {
             return Err("animation interval must be at least 250ms".into());
         }
-        let working = parse_u64(
-            "@agent_claude_working_interval",
-            3,
-            "Claude working interval",
+        let screen_ms = parse_u64(
+            "@agent_screen_interval_ms",
+            1000,
+            "screen detection interval",
         )?;
-        let idle = parse_u64("@agent_claude_idle_interval", 10, "Claude idle interval")?;
-        let timeout = parse_u64("@agent_claude_timeout", 2, "Claude timeout")?;
-        let failure_max = parse_u64(
-            "@agent_claude_failure_max_interval",
-            30,
-            "Claude failure maximum interval",
-        )?;
-        if working == 0 || idle == 0 || timeout == 0 {
-            return Err("Claude intervals and timeout must be positive".into());
-        }
-        if failure_max < working || failure_max < idle {
-            return Err(
-                "Claude failure maximum interval must not be shorter than normal polling intervals"
-                    .into(),
-            );
+        if screen_ms < 250 {
+            return Err("screen detection interval must be at least 250ms".into());
         }
         let ttl = parse_u64("@agent_state_ttl", 259200, "state TTL")?;
+
         Ok(Self {
             prefix: get("@agent_session_prefix", "agent-"),
             status_enabled: get("@agent_status", "on") == "on",
@@ -111,11 +95,13 @@ impl Config {
             show_idle: get("@agent_status_show_idle", "off") == "on",
             frames,
             animation_interval: Duration::from_millis(animation_ms),
-            claude_working_interval: Duration::from_secs(working),
-            claude_idle_interval: Duration::from_secs(idle),
-            claude_timeout: Duration::from_secs(timeout),
-            claude_failure_max_interval: Duration::from_secs(failure_max),
+            screen_interval: Duration::from_millis(screen_ms),
             state_ttl: Duration::from_secs(ttl),
+            detect_commands: word_set(&get("@agent_detect_commands", "pi codex claude")),
+            wrapper_commands: word_set(&get(
+                "@agent_detect_wrappers",
+                "node bun npx npm pnpm yarn",
+            )),
         })
     }
 
@@ -133,11 +119,10 @@ impl Config {
             show_idle: false,
             frames: vec!["a".into(), "b".into()],
             animation_interval: Duration::from_secs(1),
-            claude_working_interval: Duration::from_secs(3),
-            claude_idle_interval: Duration::from_secs(10),
-            claude_timeout: Duration::from_secs(1),
-            claude_failure_max_interval: Duration::from_secs(30),
+            screen_interval: Duration::from_secs(1),
             state_ttl: Duration::from_secs(60),
+            detect_commands: word_set("pi codex claude"),
+            wrapper_commands: word_set("node bun npx npm pnpm yarn"),
         }
     }
 }
@@ -153,45 +138,27 @@ struct AgentRecord {
     state: AgentState,
     changed_at: SystemTime,
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Source {
     Event,
-    Claude,
-}
-
-#[derive(Debug)]
-struct ClaudeQueryFinished {
-    generation: u64,
-    completed: Instant,
-    result: Result<Vec<ClaudeStatus>, String>,
-}
-#[derive(Debug)]
-struct ClaudeStatus {
-    session_id: String,
-    state: AgentState,
-    pane_id: Option<String>,
-    session_name: Option<String>,
+    Screen,
 }
 
 #[derive(Clone, Debug)]
-struct ClaudeTarget {
-    session_name: Option<String>,
-    observed: bool,
-    successful_misses: u8,
+struct PaneRow {
+    session_name: String,
+    pane_id: String,
+    command: String,
+    pane_pid: u32,
+    pane_title: String,
+    configured_tool: String,
 }
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeAgent {
-    pid: u32,
-    #[allow(dead_code)]
-    cwd: String,
-    kind: String,
-    #[allow(dead_code)]
-    started_at: Value,
-    session_id: String,
-    #[allow(dead_code)]
-    name: String,
-    status: String,
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScreenDetection {
+    state: AgentState,
+    skip_state_update: bool,
 }
 
 pub struct StateCenter {
@@ -202,19 +169,12 @@ pub struct StateCenter {
     frame_index: usize,
     animation_deadline: Option<Instant>,
     expiry_deadline: Option<Instant>,
-    claude_deadline: Option<Instant>,
-    claude_generation: u64,
-    claude_in_flight: bool,
-    claude_targets: HashMap<String, ClaudeTarget>,
-    claude_failures: u32,
-    claude_sender: Sender<ClaudeQueryFinished>,
-    claude_receiver: Receiver<ClaudeQueryFinished>,
+    screen_deadline: Option<Instant>,
     published_summary: Option<String>,
 }
 
 impl StateCenter {
     pub fn new(server_socket: String, config: Config) -> Self {
-        let (sender, receiver) = mpsc::channel();
         Self {
             server_socket,
             config,
@@ -223,29 +183,21 @@ impl StateCenter {
             frame_index: 0,
             animation_deadline: None,
             expiry_deadline: None,
-            claude_deadline: None,
-            claude_generation: 0,
-            claude_in_flight: false,
-            claude_targets: HashMap::new(),
-            claude_failures: 0,
-            claude_sender: sender,
-            claude_receiver: receiver,
+            screen_deadline: Some(Instant::now()),
             published_summary: None,
         }
     }
 
     pub fn restore_once(&mut self) {
         let format = "#{session_name}\t#{pane_id}\t#{@agent_tool}\t#{@agent_state}\t#{@agent_state_at}\t#{@agent_process_generation}\t#{@agent_sequence}";
-        let Some(output) = tmux_output(&self.server_socket, ["list-sessions", "-F", format]) else {
+        let Some(output) = tmux_output(&self.server_socket, &["list-sessions", "-F", format])
+        else {
             return;
         };
         for line in output.lines() {
             self.restore_mirror_row(line, true);
         }
-        let pane_format = "#{session_name}\t#{pane_id}\t#{@agent_tool}\t#{@agent_state}\t#{@agent_state_at}\t#{@agent_process_generation}\t#{@agent_sequence}";
-        if let Some(panes) =
-            tmux_output(&self.server_socket, ["list-panes", "-a", "-F", pane_format])
-        {
+        if let Some(panes) = tmux_output(&self.server_socket, &["list-panes", "-a", "-F", format]) {
             for line in panes.lines() {
                 self.restore_mirror_row(line, false);
             }
@@ -258,22 +210,10 @@ impl StateCenter {
             return;
         }
         let managed = fields[0].starts_with(&self.config.prefix);
-        if managed_only != managed {
+        if managed_only != managed || fields[2].is_empty() {
             return;
         }
-        if fields[2] == "claude" {
-            self.claude_targets.insert(
-                fields[1].to_string(),
-                ClaudeTarget {
-                    session_name: Some(fields[0].to_string()),
-                    observed: false,
-                    successful_misses: 0,
-                },
-            );
-            self.claude_deadline = Some(Instant::now());
-            return;
-        }
-        if fields[2].is_empty() {
+        if is_screen_owned_tool(fields[2]) {
             return;
         }
         let Some(state) = parse_state(fields[3]) else {
@@ -282,7 +222,7 @@ impl StateCenter {
         let changed_at = fields[4]
             .parse::<u64>()
             .ok()
-            .map(|s| UNIX_EPOCH + Duration::from_secs(s))
+            .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
             .unwrap_or_else(SystemTime::now);
         let generation = if fields[5].is_empty() {
             format!("restore:{}", fields[1])
@@ -310,7 +250,7 @@ impl StateCenter {
         self.config = config;
         self.frame_index = 0;
         self.animation_deadline = None;
-        self.claude_deadline = Some(Instant::now());
+        self.screen_deadline = Some(Instant::now());
     }
 
     pub fn apply(&mut self, request: Request) -> Result<(), String> {
@@ -323,8 +263,8 @@ impl StateCenter {
                 state,
                 session_name,
             } => {
-                if tool == "claude" {
-                    return Err("Claude state is owned by the native poller".into());
+                if is_screen_owned_tool(&tool) {
+                    return Err(format!("{tool} state is owned by screen detection"));
                 }
                 let key = event_key(&tool, &pane_id, &process_generation);
                 if self.retired_event_generations.contains(&key) {
@@ -352,15 +292,11 @@ impl StateCenter {
                     },
                 );
             }
-            Request::Seen {
-                pane_id,
-                session_id,
-            } => {
-                for (key, record) in &mut self.agents {
-                    if (pane_id
+            Request::Seen { pane_id } => {
+                for record in self.agents.values_mut() {
+                    if pane_id
                         .as_ref()
-                        .is_some_and(|p| record.pane_id.as_ref() == Some(p))
-                        || session_id.as_ref().is_some_and(|s| key == &claude_key(s)))
+                        .is_some_and(|pane| record.pane_id.as_ref() == Some(pane))
                         && record.state == AgentState::Done
                     {
                         record.state = AgentState::Idle;
@@ -375,10 +311,10 @@ impl StateCenter {
                 for (identity, record) in &self.agents {
                     let exits_record = pane_id
                         .as_ref()
-                        .is_some_and(|p| record.pane_id.as_ref() == Some(p))
+                        .is_some_and(|pane| record.pane_id.as_ref() == Some(pane))
                         || session_name
                             .as_ref()
-                            .is_some_and(|s| record.session_name.as_ref() == Some(s));
+                            .is_some_and(|session| record.session_name.as_ref() == Some(session));
                     if exits_record && record.source == Source::Event {
                         self.retired_event_generations.insert(identity.clone());
                     }
@@ -386,37 +322,11 @@ impl StateCenter {
                 self.agents.retain(|_, record| {
                     !(pane_id
                         .as_ref()
-                        .is_some_and(|p| record.pane_id.as_ref() == Some(p))
+                        .is_some_and(|pane| record.pane_id.as_ref() == Some(pane))
                         || session_name
                             .as_ref()
-                            .is_some_and(|s| record.session_name.as_ref() == Some(s)))
+                            .is_some_and(|session| record.session_name.as_ref() == Some(session)))
                 });
-                self.claude_targets.retain(|pane, target| {
-                    !(pane_id.as_ref() == Some(pane)
-                        || session_name
-                            .as_ref()
-                            .is_some_and(|value| target.session_name.as_ref() == Some(value)))
-                });
-            }
-            Request::ClaudeStarted {
-                pane_id,
-                session_name,
-                session_id: _,
-            }
-            | Request::ClaudeDiscovered {
-                pane_id,
-                session_name,
-                session_id: _,
-            } => {
-                self.claude_targets.insert(
-                    pane_id,
-                    ClaudeTarget {
-                        session_name,
-                        observed: false,
-                        successful_misses: 0,
-                    },
-                );
-                self.claude_deadline = Some(Instant::now());
             }
             _ => return Err("command is not a state event".into()),
         }
@@ -442,9 +352,6 @@ impl StateCenter {
     }
 
     pub fn process_deadlines(&mut self, now: Instant) {
-        while let Ok(result) = self.claude_receiver.try_recv() {
-            self.apply_claude_result(result);
-        }
         if self
             .animation_deadline
             .is_some_and(|deadline| deadline <= now)
@@ -453,8 +360,9 @@ impl StateCenter {
             self.animation_deadline = Some(now + self.config.animation_interval);
         }
         self.expire_states();
-        if self.claude_deadline.is_some_and(|deadline| deadline <= now) && !self.claude_in_flight {
-            self.start_claude_query();
+        if self.screen_deadline.is_some_and(|deadline| deadline <= now) {
+            self.scan_screen_agents();
+            self.screen_deadline = Some(now + self.config.screen_interval);
         }
     }
 
@@ -473,126 +381,85 @@ impl StateCenter {
         });
     }
 
-    fn start_claude_query(&mut self) {
-        if self.claude_targets.is_empty() {
-            self.claude_deadline = None;
+    fn scan_screen_agents(&mut self) {
+        let Some(rows) = list_pane_rows(&self.server_socket) else {
             return;
-        }
-        self.claude_generation = self.claude_generation.wrapping_add(1);
-        let generation = self.claude_generation;
-        let timeout = self.config.claude_timeout;
-        let server_socket = self.server_socket.clone();
-        let sender = self.claude_sender.clone();
-        self.claude_in_flight = true;
-        self.claude_deadline = None;
-        thread::spawn(move || {
-            let result = run_claude_command(timeout)
-                .and_then(|bytes| collect_claude_statuses(&server_socket, &bytes));
-            let _ = sender.send(ClaudeQueryFinished {
-                generation,
-                completed: Instant::now(),
-                result,
-            });
-        });
-    }
+        };
+        let process_table = process_table_snapshot();
+        let mut active_keys = HashSet::new();
 
-    fn apply_claude_result(&mut self, result: ClaudeQueryFinished) {
-        if result.generation != self.claude_generation {
-            return;
-        }
-        self.claude_in_flight = false;
-        match result.result {
-            Ok(mut statuses) => {
-                self.claude_failures = 0;
-                statuses.retain(|status| {
-                    status
-                        .pane_id
-                        .as_ref()
-                        .is_some_and(|pane| self.claude_targets.contains_key(pane))
-                });
-
-                let matched_panes: HashSet<String> = statuses
-                    .iter()
-                    .filter_map(|status| status.pane_id.clone())
-                    .collect();
-                self.claude_targets.retain(|pane, target| {
-                    if matched_panes.contains(pane) {
-                        target.observed = true;
-                        target.successful_misses = 0;
-                        return true;
-                    }
-                    if target.observed {
-                        return false;
-                    }
-                    target.successful_misses = target.successful_misses.saturating_add(1);
-                    target.successful_misses < MAX_PENDING_CLAUDE_MISSES
-                });
-
-                let returned: HashSet<String> =
-                    statuses.iter().map(|s| claude_key(&s.session_id)).collect();
-                self.agents.retain(|key, record| {
-                    record.source != Source::Claude || returned.contains(key)
-                });
-                for status in statuses {
-                    let key = claude_key(&status.session_id);
-                    let previous_record = self.agents.get(&key);
-                    let state = self.claude_display_state(previous_record, &status);
-                    let changed_at = previous_record
-                        .filter(|record| {
-                            record.state == state
-                                && record.pane_id == status.pane_id
-                                && record.session_name == status.session_name
-                        })
-                        .map(|record| record.changed_at)
-                        .unwrap_or_else(SystemTime::now);
-                    self.agents.insert(
-                        key,
-                        AgentRecord {
-                            source: Source::Claude,
-                            tool: "claude".into(),
-                            pane_id: status.pane_id,
-                            session_name: status.session_name,
-                            process_generation: None,
-                            sequence: 0,
-                            state,
-                            changed_at,
-                        },
-                    );
-                }
+        for row in rows {
+            let Some(tool) = self.resolve_screen_tool(&row, process_table.as_deref()) else {
+                continue;
+            };
+            let key = screen_key(&tool, &row.pane_id);
+            active_keys.insert(key.clone());
+            let Some(screen) = capture_pane(&self.server_socket, &row.pane_id) else {
+                continue;
+            };
+            let detection = match tool.as_str() {
+                "claude" => detect_claude(&row.pane_title, &screen),
+                "codex" => detect_codex(&row.pane_title, &screen),
+                _ => continue,
+            };
+            if detection.skip_state_update {
+                continue;
             }
-            Err(_) => self.claude_failures = self.claude_failures.saturating_add(1),
-        }
-        if self.claude_targets.is_empty() {
-            self.claude_deadline = None;
-            return;
+            let previous = self.agents.get(&key);
+            let state = self.screen_display_state(previous, detection.state, &row.pane_id);
+            let changed_at = previous
+                .filter(|record| {
+                    record.state == state
+                        && record.session_name.as_deref() == Some(row.session_name.as_str())
+                })
+                .map(|record| record.changed_at)
+                .unwrap_or_else(SystemTime::now);
+            self.agents.insert(
+                key,
+                AgentRecord {
+                    source: Source::Screen,
+                    tool,
+                    pane_id: Some(row.pane_id),
+                    session_name: Some(row.session_name),
+                    process_generation: None,
+                    sequence: 0,
+                    state,
+                    changed_at,
+                },
+            );
         }
 
-        let working = self
-            .agents
-            .values()
-            .any(|r| r.source == Source::Claude && r.state == AgentState::Working);
-        let pending = self.claude_targets.values().any(|target| !target.observed);
-        let base = if working || pending {
-            self.config.claude_working_interval
-        } else {
-            self.config.claude_idle_interval
-        };
-        let delay = if self.claude_failures == 0 {
-            base
-        } else {
-            (base * (1u32 << self.claude_failures.min(5)))
-                .min(self.config.claude_failure_max_interval)
-        };
-        self.claude_deadline = Some(result.completed + delay);
+        self.agents
+            .retain(|key, record| record.source != Source::Screen || active_keys.contains(key));
     }
 
-    fn claude_display_state(
+    fn resolve_screen_tool(&self, row: &PaneRow, process_table: Option<&str>) -> Option<String> {
+        if row.session_name.starts_with(&self.config.prefix) {
+            let configured = canonical_screen_tool(&row.configured_tool);
+            if configured.is_some() {
+                return configured;
+            }
+        }
+        let command = basename(&row.command);
+        if self.config.detect_commands.contains(command) {
+            return canonical_screen_tool(command);
+        }
+        if !self.config.wrapper_commands.contains(command) {
+            return None;
+        }
+        process_table.and_then(|table| {
+            resolve_child_screen_tool(row.pane_pid, table, &self.config.detect_commands)
+        })
+    }
+
+    fn screen_display_state(
         &self,
         previous_record: Option<&AgentRecord>,
-        status: &ClaudeStatus,
+        detected_state: AgentState,
+        pane_id: &str,
     ) -> AgentState {
-        if status.state != AgentState::Idle {
-            return status.state;
+        if detected_state != AgentState::Idle {
+            return detected_state;
         }
         let Some(record) = previous_record else {
             return AgentState::Idle;
@@ -600,12 +467,9 @@ impl StateCenter {
         if record.state == AgentState::Done {
             return AgentState::Done;
         }
-        if record.state != AgentState::Working {
+        if !matches!(record.state, AgentState::Working | AgentState::Blocked) {
             return AgentState::Idle;
         }
-        let Some(pane_id) = status.pane_id.as_deref() else {
-            return AgentState::Done;
-        };
         if is_pane_visible(&self.server_socket, pane_id) {
             AgentState::Idle
         } else {
@@ -617,7 +481,7 @@ impl StateCenter {
         let working = self
             .agents
             .values()
-            .filter(|r| r.state == AgentState::Working)
+            .filter(|record| record.state == AgentState::Working)
             .count();
         if self.config.status_enabled && self.config.animate_working && working > 0 {
             if self.animation_deadline.is_none() {
@@ -647,9 +511,9 @@ impl StateCenter {
         }
         self.agents
             .values()
-            .filter(|r| matches!(r.state, AgentState::Working | AgentState::Blocked))
-            .filter_map(|r| {
-                let age = r.changed_at.elapsed().ok()?;
+            .filter(|record| matches!(record.state, AgentState::Working | AgentState::Blocked))
+            .filter_map(|record| {
+                let age = record.changed_at.elapsed().ok()?;
                 Some(Instant::now() + self.config.state_ttl.saturating_sub(age))
             })
             .min()
@@ -659,7 +523,7 @@ impl StateCenter {
         [
             self.animation_deadline,
             self.expiry_deadline,
-            self.claude_deadline,
+            self.screen_deadline,
         ]
         .into_iter()
         .flatten()
@@ -678,7 +542,7 @@ impl StateCenter {
                 AgentState::Blocked => blocked += 1,
                 AgentState::Working => working += 1,
                 AgentState::Done => done += 1,
-                _ => idle += 1,
+                AgentState::Idle => idle += 1,
             }
         }
         let mut segments = Vec::new();
@@ -717,15 +581,13 @@ impl StateCenter {
                 summary,
             ])
             .status();
-        if !status.is_ok_and(|s| s.success()) {
+        if !status.is_ok_and(|status| status.success()) {
             return false;
         }
 
-        // Cache publication is authoritative. Redraw is best-effort and uses
-        // explicit client targets because a daemon has no current tmux client.
         let clients = tmux_output(
             &self.server_socket,
-            ["list-clients", "-F", "#{client_name}"],
+            &["list-clients", "-F", "#{client_name}"],
         )
         .unwrap_or_default();
         let clients: Vec<&str> = clients
@@ -751,21 +613,41 @@ impl StateCenter {
     }
 
     pub fn snapshot(&self) -> Value {
-        let records: Vec<Value> = self.agents.iter().map(|(identity, record)| json!({
-            "identity": identity,
-            "tool": record.tool,
-            "paneId": record.pane_id,
-            "sessionName": record.session_name,
-            "state": match record.state { AgentState::Blocked => "blocked", AgentState::Working => "working", AgentState::Done => "done", AgentState::Idle => "idle" },
-            "changedAt": record.changed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
-        })).collect();
+        let records: Vec<Value> = self
+            .agents
+            .iter()
+            .map(|(identity, record)| {
+                json!({
+                    "identity": identity,
+                    "tool": record.tool,
+                    "paneId": record.pane_id,
+                    "sessionName": record.session_name,
+                    "state": state_label(record.state),
+                    "changedAt": record.changed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+                })
+            })
+            .collect();
         let summary = if self.config.status_enabled {
             self.render()
         } else {
             String::new()
         };
-        json!({ "summary": summary, "agents": self.agents.len(), "records": records, "working": self.agents.values().filter(|r| r.state == AgentState::Working).count(), "claudeInFlight": self.claude_in_flight, "claudeGeneration": self.claude_generation, "frameIndex": self.frame_index })
+        json!({
+            "summary": summary,
+            "agents": self.agents.len(),
+            "records": records,
+            "working": self.agents.values().filter(|record| record.state == AgentState::Working).count(),
+            "frameIndex": self.frame_index
+        })
     }
+}
+
+fn word_set(value: &str) -> HashSet<String> {
+    value
+        .split_whitespace()
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn decode_tmux_value(value: &str) -> String {
@@ -784,9 +666,11 @@ fn decode_tmux_value(value: &str) -> String {
 fn event_key(tool: &str, pane: &str, generation: &str) -> String {
     format!("event:{tool}:{pane}:{generation}")
 }
-fn claude_key(session_id: &str) -> String {
-    format!("claude:{session_id}")
+
+fn screen_key(tool: &str, pane: &str) -> String {
+    format!("screen:{tool}:{pane}")
 }
+
 fn parse_state(value: &str) -> Option<AgentState> {
     match value {
         "blocked" => Some(AgentState::Blocked),
@@ -796,28 +680,84 @@ fn parse_state(value: &str) -> Option<AgentState> {
         _ => None,
     }
 }
-fn parse_claude_state(value: &str) -> Option<AgentState> {
-    match value {
-        "busy" => Some(AgentState::Working),
-        "waiting" => Some(AgentState::Blocked),
-        "idle" => Some(AgentState::Idle),
+
+fn state_label(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Blocked => "blocked",
+        AgentState::Working => "working",
+        AgentState::Done => "done",
+        AgentState::Idle => "idle",
+    }
+}
+
+fn is_screen_owned_tool(tool: &str) -> bool {
+    matches!(tool, "claude" | "codex")
+}
+
+fn canonical_screen_tool(tool: &str) -> Option<String> {
+    match tool {
+        "claude" | "claude-code" | "claude.exe" => Some("claude".to_string()),
+        "codex" => Some("codex".to_string()),
         _ => None,
     }
 }
-fn tmux_output<const N: usize>(server_socket: &str, args: [&str; N]) -> Option<String> {
+
+fn tmux_output(server_socket: &str, args: &[&str]) -> Option<String> {
     Command::new("tmux")
         .args(["-S", server_socket])
         .args(args)
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn list_pane_rows(server_socket: &str) -> Option<Vec<PaneRow>> {
+    let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}\t#{pane_title}\t#{@agent_tool}";
+    let output = tmux_output(server_socket, &["list-panes", "-a", "-F", format])?;
+    Some(
+        output
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                let session_name = fields.next()?.to_string();
+                let pane_id = fields.next()?.to_string();
+                let command = fields.next()?.to_string();
+                let pane_pid = fields.next()?.parse::<u32>().ok()?;
+                let pane_title = fields.next().unwrap_or("").to_string();
+                let configured_tool = fields.next().unwrap_or("").to_string();
+                Some(PaneRow {
+                    session_name,
+                    pane_id,
+                    command,
+                    pane_pid,
+                    pane_title,
+                    configured_tool,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn capture_pane(server_socket: &str, pane_id: &str) -> Option<String> {
+    tmux_output(
+        server_socket,
+        &[
+            "capture-pane",
+            "-p",
+            "-J",
+            "-t",
+            pane_id,
+            "-S",
+            SCREEN_CAPTURE_HISTORY_LINES,
+        ],
+    )
 }
 
 fn is_pane_visible(server_socket: &str, pane_id: &str) -> bool {
     let Some(output) = tmux_output(
         server_socket,
-        [
+        &[
             "display-message",
             "-p",
             "-t",
@@ -840,197 +780,452 @@ fn is_pane_visible(server_socket: &str, pane_id: &str) -> bool {
     session_attached != "0" && window_active == "1" && pane_active == "1"
 }
 
-fn collect_claude_statuses(server_socket: &str, bytes: &[u8]) -> Result<Vec<ClaudeStatus>, String> {
-    let agents: Vec<ClaudeAgent> =
-        serde_json::from_slice(bytes).map_err(|e| format!("invalid Claude JSON: {e}"))?;
-    let pane_rows = tmux_output(
-        server_socket,
-        [
-            "list-panes",
-            "-a",
-            "-F",
-            "#{pane_id}\t#{session_name}\t#{pane_tty}",
-        ],
-    )
-    .ok_or("failed to list tmux panes for Claude PID association")?;
-    let panes: Vec<(&str, &str, &str)> = pane_rows
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            Some((fields.next()?, fields.next()?, fields.next()?))
-        })
-        .collect();
-    // One process-table snapshot gives fixed collector subprocess cost even
-    // when Claude reports many agents.
-    let ps_output = Command::new("ps")
-        .args(["-axo", "pid=,tty="])
+fn process_table_snapshot() -> Option<String> {
+    Command::new("ps")
+        .args(["-axo", "pid=,ppid=,comm="])
         .output()
-        .map_err(|e| e.to_string())?;
-    if !ps_output.status.success() {
-        return Err("failed to snapshot PID/TTY table".into());
-    }
-    let pid_ttys: HashMap<u32, String> = String::from_utf8_lossy(&ps_output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse::<u32>().ok()?;
-            let tty = fields.next()?.to_string();
-            Some((pid, tty))
-        })
-        .collect();
-    let mut statuses = Vec::new();
-    for agent in agents {
-        if agent.kind != "interactive"
-            || agent.session_id.is_empty()
-            || agent.session_id.len() > 1024
-        {
-            continue;
-        }
-        let Some(state) = parse_claude_state(&agent.status) else {
-            continue;
-        };
-        let Some(raw_tty) = pid_ttys.get(&agent.pid).cloned() else {
-            continue;
-        };
-        if raw_tty.is_empty() || raw_tty == "??" || raw_tty == "?" {
-            continue;
-        }
-        let tty = if raw_tty.starts_with("/dev/") {
-            raw_tty
-        } else {
-            format!("/dev/{raw_tty}")
-        };
-        let Some((pane_id, session_name, _)) =
-            panes.iter().find(|(_, _, pane_tty)| *pane_tty == tty)
-        else {
-            continue;
-        };
-        statuses.push(ClaudeStatus {
-            session_id: agent.session_id,
-            state,
-            pane_id: Some((*pane_id).to_string()),
-            session_name: Some((*session_name).to_string()),
-        });
-    }
-    Ok(statuses)
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn run_claude_command(timeout: Duration) -> Result<Vec<u8>, String> {
-    let mut child = Command::new("claude");
-    child
-        .args(["agents", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    unsafe {
-        child.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+fn resolve_child_screen_tool(
+    root_pid: u32,
+    table: &str,
+    detect_commands: &HashSet<String>,
+) -> Option<String> {
+    let mut commands = HashMap::<u32, String>::new();
+    let mut children = HashMap::<u32, Vec<u32>>::new();
+    for line in table.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(pid) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(ppid) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(command) = fields.next() else {
+            continue;
+        };
+        commands.insert(pid, basename(command).to_string());
+        children.entry(ppid).or_default().push(pid);
     }
-    let mut child = child.spawn().map_err(|e| e.to_string())?;
-    let pid = child.id() as i32;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or("Claude command stdout unavailable")?;
-    let output_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let started = Instant::now();
-    loop {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) => {
-                let output = output_reader
-                    .join()
-                    .map_err(|_| "Claude output reader panicked")?
-                    .map_err(|e| e.to_string())?;
-                if !status.success() {
-                    return Err(format!("Claude command exited {status}"));
+
+    let mut queue = VecDeque::from([root_pid]);
+    let mut seen = HashSet::from([root_pid]);
+    while let Some(pid) = queue.pop_front() {
+        if let Some(command) = commands.get(&pid) {
+            if detect_commands.contains(command) {
+                if let Some(tool) = canonical_screen_tool(command) {
+                    return Some(tool);
                 }
-                return Ok(output);
             }
-            None if started.elapsed() >= timeout => {
-                unsafe {
-                    libc::kill(-pid, libc::SIGKILL);
-                }
-                let _ = child.wait();
-                let _ = output_reader.join();
-                return Err("Claude command timed out".into());
+        }
+        for child in children.get(&pid).into_iter().flatten() {
+            if seen.insert(*child) {
+                queue.push_back(*child);
             }
-            None => thread::sleep(Duration::from_millis(20)),
         }
     }
+    None
+}
+
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn detect_codex(title: &str, screen: &str) -> ScreenDetection {
+    if contains_ci(title, "Action Required") {
+        return detection(AgentState::Blocked);
+    }
+    if starts_with_braille_spinner(title) {
+        return detection(AgentState::Working);
+    }
+    let after_prompt = after_last_codex_prompt(screen);
+    if contains_all_ci(
+        after_prompt,
+        &[
+            "↑/↓ to scroll",
+            "pgup/pgdn to",
+            "home/end to jump",
+            "q to quit",
+        ],
+    ) && (contains_ci(after_prompt, "esc to edit prev")
+        || contains_ci(after_prompt, "esc/← to edit prev"))
+    {
+        return skip_detection();
+    }
+    if contains_any_ci(
+        after_prompt,
+        &[
+            "press enter to confirm or esc to cancel",
+            "enter to submit answer",
+            "enter to submit all",
+            "allow command?",
+        ],
+    ) {
+        return detection(AgentState::Blocked);
+    }
+    if weak_blocker(screen) {
+        return detection(AgentState::Blocked);
+    }
+    if !title.trim().is_empty()
+        && !starts_with_braille_spinner(title)
+        && !contains_ci(title, "Action Required")
+    {
+        return detection(AgentState::Idle);
+    }
+    detection(AgentState::Idle)
+}
+
+fn detect_claude(title: &str, screen: &str) -> ScreenDetection {
+    if starts_with_braille_spinner(title) {
+        return detection(AgentState::Working);
+    }
+    let bottom = bottom_non_empty_lines(screen, 3);
+    if contains_ci(bottom, "showing detailed transcript")
+        && contains_any_ci(
+            bottom,
+            &["ctrl+o", "ctrl+e", "↑↓ scroll", "? for shortcuts"],
+        )
+    {
+        return skip_detection();
+    }
+    let after_rule = after_last_horizontal_rule(screen);
+    if contains_all_ci(after_rule, &["enter to select", "esc to cancel"])
+        && contains_any_ci(
+            after_rule,
+            &[
+                "tab/arrow keys to navigate",
+                "arrow keys to navigate",
+                "arrows to navigate",
+                "↑/↓ to navigate",
+                "↑↓ to navigate",
+            ],
+        )
+    {
+        return detection(AgentState::Blocked);
+    }
+    if contains_all_ci(screen, &["run a dynamic workflow?", "esc to cancel"]) {
+        return detection(AgentState::Blocked);
+    }
+    let prompt_body = prompt_box_body(screen);
+    if has_claude_prompt_line(prompt_body)
+        && !contains_any_ci(
+            prompt_body,
+            &[
+                "enter to select",
+                "esc to cancel",
+                "tab/arrow keys",
+                "arrow keys to navigate",
+                "↑/↓ to navigate",
+            ],
+        )
+    {
+        return detection(AgentState::Idle);
+    }
+    if contains_all_ci(
+        screen,
+        &["select model", "enter to set as default", "esc to cancel"],
+    ) && !contains_ci(screen, "do you want to proceed?")
+        && !contains_ci(screen, "enter to select")
+    {
+        return skip_detection();
+    }
+    if contains_ci(screen, "do you want to proceed?")
+        && contains_any_ci(
+            screen,
+            &[
+                "bash command",
+                "bash(",
+                "contains expansion",
+                "tab to amend",
+                "ctrl+e to explain",
+            ],
+        )
+        && contains_any_ci(screen, &["yes", "1. yes", "2. no"])
+    {
+        return detection(AgentState::Blocked);
+    }
+    if contains_all_ci(after_rule, &["do you want to proceed?", "esc to cancel"])
+        && contains_any_ci(after_rule, &["1. yes", "2. yes", "2. no", "3. no"])
+    {
+        return detection(AgentState::Blocked);
+    }
+    if legacy_claude_blocker(screen) {
+        return detection(AgentState::Blocked);
+    }
+    if title.trim_start().starts_with('✳') {
+        return detection(AgentState::Idle);
+    }
+    detection(AgentState::Idle)
+}
+
+fn detection(state: AgentState) -> ScreenDetection {
+    ScreenDetection {
+        state,
+        skip_state_update: false,
+    }
+}
+
+fn skip_detection() -> ScreenDetection {
+    ScreenDetection {
+        state: AgentState::Idle,
+        skip_state_update: true,
+    }
+}
+
+fn starts_with_braille_spinner(value: &str) -> bool {
+    value
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch))
+}
+
+fn contains_ci(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+fn contains_all_ci(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().all(|needle| contains_ci(haystack, needle))
+}
+
+fn contains_any_ci(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| contains_ci(haystack, needle))
+}
+
+fn weak_blocker(screen: &str) -> bool {
+    contains_ci(screen, "[y/n]")
+        || contains_ci(screen, "yes (y)")
+        || ((contains_ci(screen, "do you want to") || contains_ci(screen, "would you like to"))
+            && (contains_ci(screen, "yes") || screen.contains('❯')))
+}
+
+fn legacy_claude_blocker(screen: &str) -> bool {
+    let prompt_alone = screen.lines().any(|line| line.trim() == "❯");
+    if prompt_alone {
+        return false;
+    }
+    weak_blocker(screen)
+        || contains_any_ci(
+            screen,
+            &[
+                "waiting for permission",
+                "do you want to allow this connection?",
+                "tab to amend",
+                "ctrl+e to explain",
+                "do you want to proceed?",
+                "review your answers",
+                "skip interview and plan immediately",
+            ],
+        )
+}
+
+fn after_last_codex_prompt(content: &str) -> &str {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(index) = lines
+        .iter()
+        .rposition(|line| *line == "›" || line.starts_with("› "))
+    else {
+        return content;
+    };
+    slice_from_line_index(content, &lines, index + 1)
+}
+
+fn bottom_non_empty_lines(content: &str, count: usize) -> &str {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(start_index) = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .take(count)
+        .last()
+        .map(|(index, _)| index)
+    else {
+        return "";
+    };
+    slice_from_line_index(content, &lines, start_index)
+}
+
+fn after_last_horizontal_rule(content: &str) -> &str {
+    let mut last_rule_end = 0usize;
+    let mut offset = 0usize;
+    for line in content.lines() {
+        let next_offset = offset + line.len() + 1;
+        if is_horizontal_rule(line) {
+            last_rule_end = next_offset.min(content.len());
+        }
+        offset = next_offset;
+    }
+    &content[last_rule_end..]
+}
+
+fn prompt_box_body(content: &str) -> &str {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(top) = prompt_box_top_border_index(&lines) else {
+        return "";
+    };
+    let start = line_start_offset(content, &lines, top + 1);
+    let end_index = lines[top + 1..]
+        .iter()
+        .position(|line| is_horizontal_rule(line))
+        .map(|relative| top + 1 + relative)
+        .unwrap_or(lines.len());
+    let end = line_start_offset(content, &lines, end_index);
+    &content[start.min(content.len())..end.min(content.len())]
+}
+
+fn has_claude_prompt_line(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.trim_start().starts_with('❯'))
+}
+
+fn prompt_box_top_border_index(lines: &[&str]) -> Option<usize> {
+    let mut border_count = 0;
+    for index in (0..lines.len()).rev() {
+        if is_horizontal_rule(lines[index]) {
+            border_count += 1;
+            if border_count == 2 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn is_horizontal_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let rule_chars = trimmed.chars().take_while(|ch| *ch == '─').count();
+    if rule_chars == 0 {
+        return false;
+    }
+    let rule_bytes = trimmed
+        .char_indices()
+        .nth(rule_chars)
+        .map(|(index, _)| index)
+        .unwrap_or(trimmed.len());
+    let suffix = trimmed[rule_bytes..].trim_start();
+    suffix.is_empty() || rule_chars >= 3
+}
+
+fn slice_from_line_index<'a>(content: &'a str, lines: &[&str], index: usize) -> &'a str {
+    let byte_offset = line_start_offset(content, lines, index);
+    &content[byte_offset.min(content.len())..]
+}
+
+fn line_start_offset(content: &str, lines: &[&str], index: usize) -> usize {
+    lines[..index.min(lines.len())]
+        .iter()
+        .map(|line| line.len() + 1)
+        .sum::<usize>()
+        .min(content.len())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn center() -> StateCenter {
         StateCenter::new("/nonexistent".into(), Config::test())
     }
+
     #[test]
-    fn startup_restore_accepts_manual_pi_codex_mirrors() {
-        let mut c = center();
-        c.restore_mirror_row("work\t%2\tpi\tdone\t123\tmanual-generation\t7", false);
-        assert_eq!(c.agents.len(), 1);
-        let restored = c.agents.values().next().unwrap();
+    fn startup_restore_accepts_manual_pi_mirrors() {
+        let mut state = center();
+        state.restore_mirror_row("work\t%2\tpi\tdone\t123\tmanual-generation\t7", false);
+        assert_eq!(state.agents.len(), 1);
+        let restored = state.agents.values().next().unwrap();
         assert_eq!(restored.pane_id.as_deref(), Some("%2"));
         assert_eq!(restored.state, AgentState::Done);
         assert_eq!(restored.sequence, 7);
     }
+
+    #[test]
+    fn startup_restore_ignores_screen_owned_codex_mirrors() {
+        let mut state = center();
+        state.restore_mirror_row("work\t%2\tcodex\tdone\t123\tg\t7", false);
+        assert!(state.agents.is_empty());
+    }
+
     #[test]
     fn old_sequence_does_not_replace_new() {
-        let mut c = center();
-        c.apply(Request::Report {
-            tool: "pi".into(),
-            pane_id: "%1".into(),
-            process_generation: "g".into(),
-            sequence: 2,
-            state: AgentState::Working,
-            session_name: None,
-        })
-        .unwrap();
-        c.apply(Request::Report {
-            tool: "pi".into(),
-            pane_id: "%1".into(),
-            process_generation: "g".into(),
-            sequence: 1,
-            state: AgentState::Done,
-            session_name: None,
-        })
-        .unwrap();
-        assert_eq!(c.agents.values().next().unwrap().state, AgentState::Working);
-    }
-    #[test]
-    fn pane_reuse_drops_old_generation() {
-        let mut c = center();
-        for g in ["a", "b"] {
-            c.apply(Request::Report {
-                tool: "codex".into(),
+        let mut state = center();
+        state
+            .apply(Request::Report {
+                tool: "pi".into(),
                 pane_id: "%1".into(),
-                process_generation: g.into(),
-                sequence: 1,
-                state: AgentState::Idle,
+                process_generation: "g".into(),
+                sequence: 2,
+                state: AgentState::Working,
                 session_name: None,
             })
             .unwrap();
-        }
-        c.apply(Request::Report {
+        state
+            .apply(Request::Report {
+                tool: "pi".into(),
+                pane_id: "%1".into(),
+                process_generation: "g".into(),
+                sequence: 1,
+                state: AgentState::Done,
+                session_name: None,
+            })
+            .unwrap();
+        assert_eq!(
+            state.agents.values().next().unwrap().state,
+            AgentState::Working
+        );
+    }
+
+    #[test]
+    fn codex_report_is_rejected_because_screen_detection_owns_it() {
+        let mut state = center();
+        let result = state.apply(Request::Report {
             tool: "codex".into(),
             pane_id: "%1".into(),
-            process_generation: "a".into(),
-            sequence: 2,
-            state: AgentState::Done,
+            process_generation: "g".into(),
+            sequence: 1,
+            state: AgentState::Working,
             session_name: None,
-        })
-        .unwrap();
-        assert_eq!(c.agents.len(), 1);
+        });
+        assert!(result.is_err());
+        assert!(state.agents.is_empty());
+    }
+
+    #[test]
+    fn pane_reuse_drops_old_generation() {
+        let mut state = center();
+        for generation in ["a", "b"] {
+            state
+                .apply(Request::Report {
+                    tool: "pi".into(),
+                    pane_id: "%1".into(),
+                    process_generation: generation.into(),
+                    sequence: 1,
+                    state: AgentState::Idle,
+                    session_name: None,
+                })
+                .unwrap();
+        }
+        state
+            .apply(Request::Report {
+                tool: "pi".into(),
+                pane_id: "%1".into(),
+                process_generation: "a".into(),
+                sequence: 2,
+                state: AgentState::Done,
+                session_name: None,
+            })
+            .unwrap();
+        assert_eq!(state.agents.len(), 1);
         assert_eq!(
-            c.agents
+            state
+                .agents
                 .values()
                 .next()
                 .unwrap()
@@ -1039,297 +1234,69 @@ mod tests {
             Some("b")
         );
     }
+
     #[test]
     fn seen_only_clears_done() {
-        let mut c = center();
-        c.apply(Request::Report {
-            tool: "pi".into(),
-            pane_id: "%1".into(),
-            process_generation: "g".into(),
-            sequence: 1,
-            state: AgentState::Done,
-            session_name: None,
-        })
-        .unwrap();
-        c.apply(Request::Seen {
-            pane_id: Some("%1".into()),
-            session_id: None,
-        })
-        .unwrap();
-        assert_eq!(c.agents.values().next().unwrap().state, AgentState::Idle);
+        let mut state = center();
+        state
+            .apply(Request::Report {
+                tool: "pi".into(),
+                pane_id: "%1".into(),
+                process_generation: "g".into(),
+                sequence: 1,
+                state: AgentState::Done,
+                session_name: None,
+            })
+            .unwrap();
+        state
+            .apply(Request::Seen {
+                pane_id: Some("%1".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            state.agents.values().next().unwrap().state,
+            AgentState::Idle
+        );
     }
+
+    #[test]
+    fn codex_title_detects_states() {
+        assert_eq!(
+            detect_codex("Action Required", "").state,
+            AgentState::Blocked
+        );
+        assert_eq!(detect_codex("⠋ thinking", "").state, AgentState::Working);
+        assert_eq!(detect_codex("Codex", "").state, AgentState::Idle);
+    }
+
+    #[test]
+    fn codex_screen_detects_blocker_after_prompt() {
+        let screen = "old\n› hello\nallow command?\n";
+        assert_eq!(detect_codex("", screen).state, AgentState::Blocked);
+    }
+
+    #[test]
+    fn claude_title_and_prompt_detect_states() {
+        assert_eq!(detect_claude("⠋ thinking", "").state, AgentState::Working);
+        assert_eq!(detect_claude("✳ ready", "").state, AgentState::Idle);
+        let screen = "────────\nbody\n────────\n ❯\n";
+        assert_eq!(detect_claude("", screen).state, AgentState::Idle);
+    }
+
+    #[test]
+    fn claude_permission_detects_blocked() {
+        let screen = "Do you want to proceed?\nBash command\n1. Yes\n2. No";
+        assert_eq!(detect_claude("", screen).state, AgentState::Blocked);
+    }
+
     #[test]
     fn animation_stops_and_resets() {
-        let mut c = center();
-        c.frame_index = 1;
-        c.animation_deadline = Some(Instant::now());
-        c.published_summary = Some(String::new());
-        c.reconcile(Instant::now());
-        assert_eq!(c.frame_index, 0);
-        assert!(c.animation_deadline.is_none());
-    }
-    #[test]
-    fn disabled_status_does_not_schedule_animation() {
-        let mut c = center();
-        c.config.status_enabled = false;
-        c.agents.insert(
-            "working".into(),
-            AgentRecord {
-                source: Source::Event,
-                tool: "pi".into(),
-                pane_id: None,
-                session_name: None,
-                process_generation: None,
-                sequence: 1,
-                state: AgentState::Working,
-                changed_at: SystemTime::now(),
-            },
-        );
-        c.published_summary = Some(String::new());
-        c.reconcile(Instant::now());
-        assert!(c.animation_deadline.is_none());
-        assert_eq!(c.frame_index, 0);
-    }
-    #[test]
-    fn failed_claude_result_preserves_state() {
-        let mut c = center();
-        c.agents.insert(
-            claude_key("s"),
-            AgentRecord {
-                source: Source::Claude,
-                tool: "claude".into(),
-                pane_id: None,
-                session_name: None,
-                process_generation: None,
-                sequence: 0,
-                state: AgentState::Done,
-                changed_at: SystemTime::now(),
-            },
-        );
-        c.claude_targets.insert(
-            "%1".into(),
-            ClaudeTarget {
-                session_name: None,
-                observed: true,
-                successful_misses: 0,
-            },
-        );
-        c.claude_generation = 2;
-        c.claude_in_flight = true;
-        c.apply_claude_result(ClaudeQueryFinished {
-            generation: 2,
-            completed: Instant::now(),
-            result: Err("bad".into()),
-        });
-        assert_eq!(c.agents.values().next().unwrap().state, AgentState::Done);
-        assert!(c.claude_deadline.is_some());
-    }
-    #[test]
-    fn successful_missing_result_removes_observed_claude_target() {
-        let mut c = center();
-        c.claude_targets.insert(
-            "%1".into(),
-            ClaudeTarget {
-                session_name: None,
-                observed: true,
-                successful_misses: 0,
-            },
-        );
-        c.claude_generation = 1;
-        c.apply_claude_result(ClaudeQueryFinished {
-            generation: 1,
-            completed: Instant::now(),
-            result: Ok(vec![]),
-        });
-        assert!(c.claude_targets.is_empty());
-        assert!(c.claude_deadline.is_none());
-    }
-    #[test]
-    fn pending_claude_target_has_bounded_registration_grace() {
-        let mut c = center();
-        c.claude_targets.insert(
-            "%1".into(),
-            ClaudeTarget {
-                session_name: None,
-                observed: false,
-                successful_misses: 0,
-            },
-        );
-        c.claude_generation = 1;
-        for miss in 1..=MAX_PENDING_CLAUDE_MISSES {
-            c.apply_claude_result(ClaudeQueryFinished {
-                generation: 1,
-                completed: Instant::now(),
-                result: Ok(vec![]),
-            });
-            assert_eq!(
-                c.claude_targets.is_empty(),
-                miss == MAX_PENDING_CLAUDE_MISSES
-            );
-        }
-        assert!(c.claude_deadline.is_none());
-    }
-    #[test]
-    fn claude_unseen_working_to_idle_becomes_done_until_seen() {
-        let mut c = center();
-        c.claude_targets.insert(
-            "%1".into(),
-            ClaudeTarget {
-                session_name: Some("work".into()),
-                observed: true,
-                successful_misses: 0,
-            },
-        );
-        c.agents.insert(
-            claude_key("session"),
-            AgentRecord {
-                source: Source::Claude,
-                tool: "claude".into(),
-                pane_id: Some("%1".into()),
-                session_name: Some("work".into()),
-                process_generation: None,
-                sequence: 0,
-                state: AgentState::Working,
-                changed_at: SystemTime::now() - Duration::from_secs(30),
-            },
-        );
-        c.claude_generation = 1;
-        c.apply_claude_result(ClaudeQueryFinished {
-            generation: 1,
-            completed: Instant::now(),
-            result: Ok(vec![ClaudeStatus {
-                session_id: "session".into(),
-                state: AgentState::Idle,
-                pane_id: Some("%1".into()),
-                session_name: Some("work".into()),
-            }]),
-        });
-        assert_eq!(c.agents[&claude_key("session")].state, AgentState::Done);
-
-        c.claude_generation = 2;
-        c.apply_claude_result(ClaudeQueryFinished {
-            generation: 2,
-            completed: Instant::now(),
-            result: Ok(vec![ClaudeStatus {
-                session_id: "session".into(),
-                state: AgentState::Idle,
-                pane_id: Some("%1".into()),
-                session_name: Some("work".into()),
-            }]),
-        });
-        assert_eq!(c.agents[&claude_key("session")].state, AgentState::Done);
-
-        c.apply(Request::Seen {
-            pane_id: Some("%1".into()),
-            session_id: None,
-        })
-        .unwrap();
-        assert_eq!(c.agents[&claude_key("session")].state, AgentState::Idle);
-    }
-
-    #[test]
-    fn unchanged_claude_state_preserves_transition_timestamp() {
-        let mut c = center();
-        let changed_at = SystemTime::now() - Duration::from_secs(30);
-        c.claude_targets.insert(
-            "%1".into(),
-            ClaudeTarget {
-                session_name: Some("work".into()),
-                observed: true,
-                successful_misses: 0,
-            },
-        );
-        c.agents.insert(
-            claude_key("session"),
-            AgentRecord {
-                source: Source::Claude,
-                tool: "claude".into(),
-                pane_id: Some("%1".into()),
-                session_name: Some("work".into()),
-                process_generation: None,
-                sequence: 0,
-                state: AgentState::Idle,
-                changed_at,
-            },
-        );
-        c.claude_generation = 1;
-        c.apply_claude_result(ClaudeQueryFinished {
-            generation: 1,
-            completed: Instant::now(),
-            result: Ok(vec![ClaudeStatus {
-                session_id: "session".into(),
-                state: AgentState::Idle,
-                pane_id: Some("%1".into()),
-                session_name: Some("work".into()),
-            }]),
-        });
-        assert_eq!(c.agents[&claude_key("session")].changed_at, changed_at);
-    }
-    #[test]
-    fn stale_claude_generation_is_ignored() {
-        let mut c = center();
-        c.claude_generation = 2;
-        c.claude_in_flight = true;
-        c.apply_claude_result(ClaudeQueryFinished {
-            generation: 1,
-            completed: Instant::now(),
-            result: Ok(vec![]),
-        });
-        assert!(c.claude_in_flight);
-    }
-    #[test]
-    fn working_and_blocked_expire_but_done_remains() {
-        let mut c = center();
-        let old = SystemTime::now() - Duration::from_secs(61);
-        for (key, state) in [("w", AgentState::Working), ("d", AgentState::Done)] {
-            c.agents.insert(
-                key.into(),
-                AgentRecord {
-                    source: Source::Event,
-                    tool: "pi".into(),
-                    pane_id: None,
-                    session_name: None,
-                    process_generation: None,
-                    sequence: 0,
-                    state,
-                    changed_at: old,
-                },
-            );
-        }
-        c.expire_states();
-        assert!(!c.agents.contains_key("w"));
-        assert!(c.agents.contains_key("d"));
-    }
-    #[test]
-    fn tmux_quoted_config_values_are_decoded() {
-        assert_eq!(decode_tmux_value("\"✦ ✷\""), "✦ ✷");
-        assert_eq!(decode_tmux_value("on"), "on");
-        assert_eq!(decode_tmux_value("''"), "");
-    }
-    #[test]
-    fn config_rejects_empty_frames_and_short_animation_interval() {
-        let mut values = HashMap::new();
-        values.insert("@agent_status_anim_frames".into(), "   ".into());
-        assert!(Config::from_values(&values).is_err());
-        values.insert("@agent_status_anim_frames".into(), "a b".into());
-        values.insert("@agent_animation_interval_ms".into(), "249".into());
-        assert!(Config::from_values(&values).is_err());
-        values.insert("@agent_animation_interval_ms".into(), "1000".into());
-        values.insert("@agent_claude_failure_max_interval".into(), "2".into());
-        assert!(Config::from_values(&values).is_err());
-    }
-    #[test]
-    fn claude_real_status_values_map_correctly() {
-        let agents: Vec<ClaudeAgent> = serde_json::from_str(
-            r#"[{"pid":42,"cwd":"/tmp/work","kind":"interactive","startedAt":1234,"sessionId":"session-1","name":"work","status":"busy"}]"#,
-        )
-        .unwrap();
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].pid, 42);
-        assert_eq!(agents[0].session_id, "session-1");
-        assert_eq!(parse_claude_state("busy"), Some(AgentState::Working));
-        assert_eq!(parse_claude_state("waiting"), Some(AgentState::Blocked));
-        assert_eq!(parse_claude_state("idle"), Some(AgentState::Idle));
-        assert_eq!(parse_claude_state("done"), None);
+        let mut state = center();
+        state.frame_index = 1;
+        state.animation_deadline = Some(Instant::now());
+        state.published_summary = Some(String::new());
+        state.reconcile(Instant::now());
+        assert_eq!(state.frame_index, 0);
+        assert!(state.animation_deadline.is_none());
     }
 }

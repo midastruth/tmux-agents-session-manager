@@ -19,21 +19,10 @@ pub enum Request {
     },
     Seen {
         pane_id: Option<String>,
-        session_id: Option<String>,
     },
     Exited {
         pane_id: Option<String>,
         session_name: Option<String>,
-    },
-    ClaudeStarted {
-        pane_id: String,
-        session_name: Option<String>,
-        session_id: Option<String>,
-    },
-    ClaudeDiscovered {
-        pane_id: String,
-        session_name: Option<String>,
-        session_id: Option<String>,
     },
     ReloadConfig,
     Shutdown,
@@ -109,18 +98,12 @@ pub fn validate_request(request: &Request) -> Result<(), String> {
                 field("session_name", value)?;
             }
         }
-        Request::Seen {
-            pane_id,
-            session_id,
-        } => {
-            if pane_id.is_none() && session_id.is_none() {
-                return Err("Seen needs pane_id or session_id".into());
+        Request::Seen { pane_id } => {
+            if pane_id.is_none() {
+                return Err("Seen needs pane_id".into());
             }
             if let Some(value) = pane_id {
                 pane(value)?;
-            }
-            if let Some(value) = session_id {
-                field("session_id", value)?;
             }
         }
         Request::Exited {
@@ -135,24 +118,6 @@ pub fn validate_request(request: &Request) -> Result<(), String> {
             }
             if let Some(value) = session_name {
                 field("session_name", value)?;
-            }
-        }
-        Request::ClaudeStarted {
-            pane_id,
-            session_name,
-            session_id,
-        }
-        | Request::ClaudeDiscovered {
-            pane_id,
-            session_name,
-            session_id,
-        } => {
-            pane(pane_id)?;
-            if let Some(value) = session_name {
-                field("session_name", value)?;
-            }
-            if let Some(value) = session_id {
-                field("session_id", value)?;
             }
         }
         _ => {}
@@ -221,10 +186,8 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_bad_pane() {
-        let r = Request::ClaudeDiscovered {
-            pane_id: "1".into(),
-            session_name: None,
-            session_id: None,
+        let r = Request::Seen {
+            pane_id: Some("1".into()),
         };
         assert!(validate_request(&r).is_err());
     }
@@ -243,16 +206,22 @@ mod tests {
 
     #[test]
     fn rejects_oversized_and_delimited_identity_fields() {
-        let oversized = Request::ClaudeStarted {
+        let oversized = Request::Report {
+            tool: "pi".into(),
             pane_id: "%1".into(),
-            session_name: Some("x".repeat(MAX_FIELD_BYTES + 1)),
-            session_id: None,
+            process_generation: "x".repeat(MAX_FIELD_BYTES + 1),
+            sequence: 1,
+            state: AgentState::Idle,
+            session_name: None,
         };
         assert!(validate_request(&oversized).is_err());
-        let delimited = Request::ClaudeStarted {
+        let delimited = Request::Report {
+            tool: "pi".into(),
             pane_id: "%1".into(),
-            session_name: Some("bad\tname".into()),
-            session_id: None,
+            process_generation: "bad\tname".into(),
+            sequence: 1,
+            state: AgentState::Idle,
+            session_name: None,
         };
         assert!(validate_request(&delimited).is_err());
     }
