@@ -208,7 +208,9 @@ kills and reaps the child process group.
 The collector runs the user-verified command `claude agents --json`. Its real
 records contain `pid`, `cwd`, `kind`, `startedAt`, `sessionId`, `name`, and
 `status`. Only `kind=interactive` is used. `busy` maps to `working`, `waiting`
-maps to `blocked`, and `idle` maps to `idle`. The collector resolves
+maps to `blocked`, and `idle` normally maps to `idle`. If the previous daemon
+state was `working`, an unwatched transition to `idle` becomes `done` until the
+pane is opened; a watched transition becomes `idle`. The collector resolves
 each PID to its TTY and then matches that TTY to a tmux pane/session. PID is
 used only for this live association; `sessionId` remains the long-lived
 identity. Each poll starts one `claude agents --json`, one full-table `ps`

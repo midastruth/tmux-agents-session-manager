@@ -535,11 +535,11 @@ impl StateCenter {
                 });
                 for status in statuses {
                     let key = claude_key(&status.session_id);
-                    let changed_at = self
-                        .agents
-                        .get(&key)
+                    let previous_record = self.agents.get(&key);
+                    let state = self.claude_display_state(previous_record, &status);
+                    let changed_at = previous_record
                         .filter(|record| {
-                            record.state == status.state
+                            record.state == state
                                 && record.pane_id == status.pane_id
                                 && record.session_name == status.session_name
                         })
@@ -554,7 +554,7 @@ impl StateCenter {
                             session_name: status.session_name,
                             process_generation: None,
                             sequence: 0,
-                            state: status.state,
+                            state,
                             changed_at,
                         },
                     );
@@ -584,6 +584,33 @@ impl StateCenter {
                 .min(self.config.claude_failure_max_interval)
         };
         self.claude_deadline = Some(result.completed + delay);
+    }
+
+    fn claude_display_state(
+        &self,
+        previous_record: Option<&AgentRecord>,
+        status: &ClaudeStatus,
+    ) -> AgentState {
+        if status.state != AgentState::Idle {
+            return status.state;
+        }
+        let Some(record) = previous_record else {
+            return AgentState::Idle;
+        };
+        if record.state == AgentState::Done {
+            return AgentState::Done;
+        }
+        if record.state != AgentState::Working {
+            return AgentState::Idle;
+        }
+        let Some(pane_id) = status.pane_id.as_deref() else {
+            return AgentState::Done;
+        };
+        if is_pane_visible(&self.server_socket, pane_id) {
+            AgentState::Idle
+        } else {
+            AgentState::Done
+        }
     }
 
     pub fn reconcile(&mut self, now: Instant) {
@@ -785,6 +812,32 @@ fn tmux_output<const N: usize>(server_socket: &str, args: [&str; N]) -> Option<S
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+fn is_pane_visible(server_socket: &str, pane_id: &str) -> bool {
+    let Some(output) = tmux_output(
+        server_socket,
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{session_attached} #{window_active} #{pane_active}",
+        ],
+    ) else {
+        return false;
+    };
+    let mut fields = output.split_whitespace();
+    let Some(session_attached) = fields.next() else {
+        return false;
+    };
+    let Some(window_active) = fields.next() else {
+        return false;
+    };
+    let Some(pane_active) = fields.next() else {
+        return false;
+    };
+    session_attached != "0" && window_active == "1" && pane_active == "1"
 }
 
 fn collect_claude_statuses(server_socket: &str, bytes: &[u8]) -> Result<Vec<ClaudeStatus>, String> {
@@ -1116,6 +1169,64 @@ mod tests {
         }
         assert!(c.claude_deadline.is_none());
     }
+    #[test]
+    fn claude_unseen_working_to_idle_becomes_done_until_seen() {
+        let mut c = center();
+        c.claude_targets.insert(
+            "%1".into(),
+            ClaudeTarget {
+                session_name: Some("work".into()),
+                observed: true,
+                successful_misses: 0,
+            },
+        );
+        c.agents.insert(
+            claude_key("session"),
+            AgentRecord {
+                source: Source::Claude,
+                tool: "claude".into(),
+                pane_id: Some("%1".into()),
+                session_name: Some("work".into()),
+                process_generation: None,
+                sequence: 0,
+                state: AgentState::Working,
+                changed_at: SystemTime::now() - Duration::from_secs(30),
+            },
+        );
+        c.claude_generation = 1;
+        c.apply_claude_result(ClaudeQueryFinished {
+            generation: 1,
+            completed: Instant::now(),
+            result: Ok(vec![ClaudeStatus {
+                session_id: "session".into(),
+                state: AgentState::Idle,
+                pane_id: Some("%1".into()),
+                session_name: Some("work".into()),
+            }]),
+        });
+        assert_eq!(c.agents[&claude_key("session")].state, AgentState::Done);
+
+        c.claude_generation = 2;
+        c.apply_claude_result(ClaudeQueryFinished {
+            generation: 2,
+            completed: Instant::now(),
+            result: Ok(vec![ClaudeStatus {
+                session_id: "session".into(),
+                state: AgentState::Idle,
+                pane_id: Some("%1".into()),
+                session_name: Some("work".into()),
+            }]),
+        });
+        assert_eq!(c.agents[&claude_key("session")].state, AgentState::Done);
+
+        c.apply(Request::Seen {
+            pane_id: Some("%1".into()),
+            session_id: None,
+        })
+        .unwrap();
+        assert_eq!(c.agents[&claude_key("session")].state, AgentState::Idle);
+    }
+
     #[test]
     fn unchanged_claude_state_preserves_transition_timestamp() {
         let mut c = center();
