@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Shared helpers for tmux-agents-session-manager.
 
-# Absolute directory of this helpers file, so trigger_status_refresh can locate
-# status.sh without every caller passing a path. Resolved once at source time.
+# Absolute directory of this helpers file, used by lifecycle event helpers.
 if [ -z "${STATUS_HELPERS_DIR:-}" ]; then
   __helpers_src="${BASH_SOURCE[0]}"
   __helpers_dir="${__helpers_src%/*}"
@@ -10,29 +9,6 @@ if [ -z "${STATUS_HELPERS_DIR:-}" ]; then
   STATUS_HELPERS_DIR="$(cd "$__helpers_dir" 2>/dev/null && pwd)"
   unset __helpers_src __helpers_dir
 fi
-
-# trigger_status_refresh
-# Recompute the cached status badge (@agent_status_cache) in the background, so
-# the event-driven status line updates promptly after a state change without any
-# periodic polling. Safe to call from hot paths: it backgrounds status.sh and
-# returns immediately. Gated on @agent_status being enabled, so users who never
-# turned on the badge pay nothing on every reported state change (no fork of
-# status.sh --refresh, no refresh-client). SOURCE_PATH/DIR from the caller
-# locate status.sh next to this helper.
-# shellcheck disable=SC2120  # dir arg is optional; callers rely on the default.
-trigger_status_refresh() {
-  local dir="${1:-${STATUS_HELPERS_DIR:-}}"
-  [ -n "$dir" ] || return 0
-  [ -x "$dir/status.sh" ] || return 0
-  # Only refresh when the auto-injected badge is enabled; otherwise the cache is
-  # unused and the refresh (plus its refresh-client -S redraw) is pure overhead.
-  # Match agents_session_manager.tmux, which enables the badge by default: treat
-  # an unset/empty @agent_status as 'on' and skip only when explicitly 'off'.
-  [ "$(get_tmux_option @agent_status 'on')" = on ] || return 0
-  # run-shell passes its argument to a shell: quote the script path so plugin
-  # installs under directories with spaces still work.
-  tmux run-shell -b "$(printf '%q' "$dir/status.sh") --refresh" 2>/dev/null || true
-}
 
 # get_tmux_option <option-name> <default>
 # Echoes the global tmux option value, or the default when unset/empty.
@@ -93,49 +69,36 @@ is_watched_agent_pane() {
 # also clear pane-scoped "done" values. A pane-scoped stale "done" must not reset
 # an authoritative session-level "working"/"blocked" state.
 mark_managed_session_seen_if_done() {
-  local session="$1" session_state pane pane_state now
-  local -a args
-
+  local session="$1" session_state pane pane_state now event_q
   session_state="$(tmux show-options -qv -t "$session" @agent_state 2>/dev/null || true)"
   now="$(date +%s)"
-  args=()
-
   if [ "$session_state" = "done" ]; then
-    args+=(
-      set-option -t "$session" @agent_state idle
-      \; set-option -t "$session" @agent_state_at "$now"
-    )
+    tmux set-option -t "$session" @agent_state idle \
+      \; set-option -t "$session" @agent_state_at "$now" 2>/dev/null || true
   fi
-
+  event_q="$(printf '%q' "$STATUS_HELPERS_DIR/event.sh")"
   while IFS= read -r pane; do
     [ -n "$pane" ] || continue
     pane_state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
-    [ "$pane_state" = "done" ] || continue
-    if [ "${#args[@]}" -gt 0 ]; then
-      args+=(\;)
+    if [ "$pane_state" = "done" ]; then
+      tmux set-option -p -t "$pane" @agent_state idle \
+        \; set-option -p -t "$pane" @agent_state_at "$now" 2>/dev/null || true
     fi
-    args+=(
-      set-option -pu -t "$pane" @agent_state
-      \; set-option -pu -t "$pane" @agent_state_at
-    )
+    tmux run-shell -b "$event_q seen-pane $(printf '%q' "$pane")" 2>/dev/null || true
   done < <(tmux list-panes -s -t "$session" -F '#{pane_id}' 2>/dev/null)
-
-  [ "${#args[@]}" -gt 0 ] || return 0
-  tmux "${args[@]}" 2>/dev/null || true
-  # State changed (done -> seen); refresh the cached status badge.
-  trigger_status_refresh
 }
 
 # mark_pane_seen_if_done <pane>
 mark_pane_seen_if_done() {
-  local pane="$1" state now
+  local pane="$1" state now event_q
   state="$(tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
-  [ "$state" = "done" ] || return 0
-  now="$(date +%s)"
-  tmux set-option -p -t "$pane" @agent_state idle \
-    \; set-option -p -t "$pane" @agent_state_at "$now" 2>/dev/null || true
-  # State changed (done -> seen); refresh the cached status badge.
-  trigger_status_refresh
+  if [ "$state" = "done" ]; then
+    now="$(date +%s)"
+    tmux set-option -p -t "$pane" @agent_state idle \
+      \; set-option -p -t "$pane" @agent_state_at "$now" 2>/dev/null || true
+  fi
+  event_q="$(printf '%q' "$STATUS_HELPERS_DIR/event.sh")"
+  tmux run-shell -b "$event_q seen-pane $(printf '%q' "$pane")" 2>/dev/null || true
 }
 
 # detect_commands
@@ -203,13 +166,19 @@ process_table_snapshot() {
 # detect list. This makes codex discoverable while keeping bare commands fast.
 resolve_pane_agent() {
   local cmd="$1" pid="$2" table out
+  # Claude Code may expose its executable name as claude.exe even on macOS.
+  # Treat it as the configured logical `claude` tool.
+  if [ "$cmd" = claude.exe ] && is_detected_command claude; then
+    printf '%s' claude
+    return 0
+  fi
   if is_detected_command "$cmd"; then
     printf '%s' "$cmd"
     return 0
   fi
   [ -n "$pid" ] || return 1
   # Only known wrappers get a process-subtree scan. Walking every non-agent pane
-  # is expensive in large tmux workspaces and status.sh runs repeatedly.
+  # is expensive in large tmux workspaces and picker discovery is latency-sensitive.
   is_wrapper_command "$cmd" || return 1
 
   table="${AGENT_PS_TABLE:-}"

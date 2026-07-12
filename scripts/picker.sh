@@ -17,6 +17,23 @@ AGENT_DETECT_COMMANDS="$(detect_commands)"
 AGENT_DETECT_WRAPPERS="$(wrapper_commands)"
 export AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS
 
+# One daemon snapshot supplies every row; the picker never reads legacy tmux
+# state options. If the daemon is unavailable, rows remain discoverable with an
+# unknown/manual state.
+daemon_records="$("$DIR/daemon.sh" snapshot-picker 2>/dev/null || true)"
+
+lookup_daemon_state() {
+  local kind="$1" target="$2" session pane state changed
+  while IFS=$'\037' read -r session pane state changed; do
+    [ -n "$state" ] || continue
+    if { [ "$kind" = session ] && [ "$session" = "$target" ]; } || { [ "$kind" = pane ] && [ "$pane" = "$target" ]; }; then
+      printf '%s\t%s' "$state" "$changed"
+      return 0
+    fi
+  done <<< "$daemon_records"
+  return 1
+}
+
 short_path() {
   # shellcheck disable=SC2088 # literal ~ is intentional for display
   case "$1" in
@@ -89,12 +106,17 @@ split_classify() {
 }
 
 emit_managed_rows() {
-  local now s state at path cmd tool instance name rank label desc ago
+  local now s state at path cmd tool instance name rank label desc ago daemon_state
   now=$(picker_now)
   tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}	#{pane_current_path}	#{@agent_tool}	#{pane_current_command}	#{@agent_instance}' 2>/dev/null |
     while IFS=$'\t' read -r s state at path tool cmd instance; do
       is_managed_session "$s" || continue
       name=${path##*/}
+      daemon_state="$(lookup_daemon_state session "$s" || true)"
+      if [ -n "$daemon_state" ]; then
+        state="${daemon_state%%$'\t'*}"
+        at="${daemon_state#*$'\t'}"
+      fi
       # The agent recorded at launch, falling back to whatever runs in the pane.
       [ -n "$tool" ] || tool=${cmd##*/}
       [ -n "$instance" ] && tool="${tool}-${instance}"
@@ -107,7 +129,7 @@ emit_managed_rows() {
 }
 
 emit_manual_rows() {
-  local now panes s pane cmd ppid path state at opts line base name rank label desc ago
+  local now panes s pane cmd ppid path state at opts line base name rank label desc ago daemon_state event_q
   now=$(picker_now)
   panes="$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null)" || return 1
 
@@ -135,28 +157,33 @@ emit_manual_rows() {
     base="$(resolve_pane_agent "${cmd##*/}" "$ppid")" || continue
     [ -n "$base" ] || continue
     name=${path##*/}
-    # Per-pane state, written by the extension/state.sh when loaded. Falls back
-    # to a plain "manual" marker when no status extension is attached. Use
-    # named option output because -qv omits unset values and can shift fields.
-    # The pane may have closed between list-panes and this query; skip only
-    # after a fresh list-panes confirms that race. If the pane still exists (or
-    # the confirmation query itself fails), propagate the tmux failure instead
-    # of silently hiding a manual agent pane.
-    if ! opts="$(tmux show-options -p -t "$pane" 2>/dev/null)"; then
-      pane_still_exists "$pane"
-      case "$?" in
-      1) continue ;;
-      *) return 1 ;;
-      esac
+    daemon_state="$(lookup_daemon_state pane "$pane" || true)"
+    if [ -n "$daemon_state" ]; then
+      state="${daemon_state%%$'\t'*}"
+      at="${daemon_state#*$'\t'}"
+    else
+      # The tmux mirror is the daemon's restart/recovery snapshot and remains a
+      # reliable picker fallback while the daemon client is unavailable.
+      if ! opts="$(tmux show-options -p -t "$pane" 2>/dev/null)"; then
+        pane_still_exists "$pane"
+        case "$?" in
+        1) continue ;;
+        *) return 1 ;;
+        esac
+      fi
+      state=''
+      at=''
+      while IFS= read -r line; do
+        case "$line" in
+        "@agent_state "*) state="${line#@agent_state }" ;;
+        "@agent_state_at "*) at="${line#@agent_state_at }" ;;
+        esac
+      done <<< "$opts"
     fi
-    state=''
-    at=''
-    while IFS= read -r line; do
-      case "$line" in
-      "@agent_state "*)    state="${line#@agent_state }" ;;
-      "@agent_state_at "*) at="${line#@agent_state_at }" ;;
-      esac
-    done <<< "$opts"
+    if [ "$base" = claude ]; then
+      event_q="$(printf '%q' "$DIR/event.sh")"
+      tmux run-shell -b "$event_q claude-discovered $(printf '%q' "$pane") $(printf '%q' "$s")" 2>/dev/null || true
+    fi
     if [ -n "$state" ]; then
       split_classify "$state"
     else
@@ -215,10 +242,19 @@ emit_rows() {
 }
 
 kill_target() {
-  local kind="$1" target="$2"
+  local kind="$1" target="$2" event_q
+  event_q="$(printf '%q' "$DIR/event.sh")"
   case "$kind" in
-  session) tmux kill-session -t "$target" 2>/dev/null ;;
-  pane)    tmux send-keys -t "$target" C-c 2>/dev/null ;;
+  session)
+    if tmux kill-session -t "$target" 2>/dev/null; then
+      tmux run-shell -b "$event_q exited-session $(printf '%q' "$target")" 2>/dev/null || true
+    fi
+    ;;
+  pane)
+    # Ctrl-C interrupts the current turn; it does not prove the long-lived CLI
+    # exited, so keep daemon state and Claude polling active.
+    tmux send-keys -t "$target" C-c 2>/dev/null
+    ;;
   esac
 }
 

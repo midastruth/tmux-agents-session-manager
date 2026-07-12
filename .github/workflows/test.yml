@@ -16,13 +16,20 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Shellcheck
-        run: shellcheck -x -P scripts scripts/*.sh *.tmux
+        run: shellcheck -x -P scripts agents_session_manager.tmux scripts/*.sh tests/*.sh tests/lib/*.sh
 
-      - name: Unit tests
+      - name: Rust format, lint, and tests
+        run: |
+          cargo fmt --manifest-path daemon/Cargo.toml -- --check
+          cargo check --manifest-path daemon/Cargo.toml
+          cargo test --manifest-path daemon/Cargo.toml
+          cargo clippy --manifest-path daemon/Cargo.toml --all-targets -- -D warnings
+          cargo build --release --manifest-path daemon/Cargo.toml
+
+      - name: Bash unit tests
         run: bash tests/run.sh
 
       - name: Smoke performance tests
         env:
-          PERF_MAX_STATUS_MS: 4000
           PERF_MAX_PICKER_MS: 10000
         run: bash tests/perf_smoke.sh

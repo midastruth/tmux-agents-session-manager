@@ -77,19 +77,29 @@ else
   fi
 fi
 
+if [ -n "$agent" ]; then
+  tool="$agent"
+else
+  tool_first="${cmd%% *}"
+  tool="${tool_first##*/}"
+fi
+
 if [ "$created" -eq 1 ]; then
   tmux set-option -t "$session" @agent_state idle
   tmux set-option -t "$session" @agent_state_at "$(date +%s)"
   # Record the selected agent and optional instance separately, so the picker
   # can display pi-1 / pi-2 without having to parse the internal session name.
-  if [ -n "$agent" ]; then
-    tool="$agent"
-  else
-    tool_first="${cmd%% *}"
-    tool="${tool_first##*/}"
-  fi
   tmux set-option -t "$session" @agent_tool "$tool"
   [ -n "$instance" ] && tmux set-option -t "$session" @agent_instance "$instance"
+fi
+
+agent_pane="$(tmux list-panes -t "$session" -F '#{pane_id}' 2>/dev/null | head -n 1)"
+if [ "$created" -eq 1 ] && [ -n "$agent_pane" ]; then
+  tmux set-option -p -t "$agent_pane" @agent_tool "$tool"
+fi
+if [ "$tool" = claude ] && [ -n "$agent_pane" ]; then
+  event_q="$(printf '%q' "$DIR/event.sh")"
+  tmux run-shell -b "$event_q claude-started $(printf '%q' "$agent_pane") $(printf '%q' "$session")"
 fi
 
 # Record which window launched it, so the picker can jump back here later.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034 # mock configuration variables are consumed by subprocesses
+# shellcheck source-path=SCRIPTDIR
 # Smoke performance checks for hot paths. Uses the shared tmux mock, so results
 # are stable enough to catch large regressions without a live tmux server.
 # Run with: bash tests/perf_smoke.sh
@@ -6,7 +8,6 @@
 # Tunables (environment):
 #   PERF_ITERATIONS      measured runs per case (default 7)
 #   PERF_WARMUP          discarded warm-up runs per case (default 2)
-#   PERF_MAX_STATUS_MS   absolute median threshold for status.sh (0 disables)
 #   PERF_MAX_PICKER_MS   absolute median threshold for picker.sh (0 disables)
 #   PERF_MAX_GROWTH      max allowed median growth when n doubles 50->100
 #                        (default 3.5; linear ~2x, quadratic ~4x; 0 disables)
@@ -29,16 +30,20 @@ trap cleanup EXIT
 # shellcheck source=lib/tmux_mock.sh
 . "$ROOT/tests/lib/tmux_mock.sh"
 install_tmux_mock "$MOCK_BIN"
+cat >"$MOCK_BIN/state-daemon" <<'DAEMON_MOCK'
+#!/usr/bin/env bash
+case "${1:-}" in
+snapshot) printf '{"ok":true,"data":{"records":[]}}\n' ;;
+snapshot-picker) printf '%s' "${DAEMON_SNAPSHOT_ROWS:-}" ;;
+esac
+DAEMON_MOCK
+chmod +x "$MOCK_BIN/state-daemon"
 
 export PATH="$MOCK_BIN:$PATH"
+export AGENT_DAEMON_BINARY="$MOCK_BIN/state-daemon"
 export AGENT_SESSION_PREFIX='agent-'
 export AGENT_DETECT_COMMANDS='pi codex claude'
 export AGENT_DETECT_WRAPPERS='node bun npx npm pnpm yarn'
-
-status_options() {
-  local us=$'\037'
-  printf '%s' "agent-${us}✦${us}✓${us}●${us}·${us}agents${us}off${us}✦ ✷  ✹  ✴${us}yellow${us}cyan${us}red${us}green${us}off${us}off${us}259200"
-}
 
 # --- timing -------------------------------------------------------------
 # Prefer $EPOCHREALTIME (bash >= 5, no subprocess, microsecond precision),
@@ -111,7 +116,7 @@ measure() {
 }
 
 build_case() {
-  local n="$1" now sessions='' panes_status='' panes_picker='' opts=''
+  local n="$1" now sessions='' panes_status='' panes_picker='' opts='' daemon_rows=''
   local i state tool cmd path pane manual_state
   now="$(date +%s)"
   for i in $(seq 1 "$n"); do
@@ -128,6 +133,7 @@ build_case() {
     esac
     path="/tmp/project-$i"
     sessions+="agent-$tool-$i	$state	$now	$path	$tool	$cmd"$'\n'
+    daemon_rows+="agent-$tool-$i"$'\037'"%m$i"$'\037'"$state"$'\037'"$now"$'\n'
 
     pane="%$i"
     manual_state="$state"
@@ -135,15 +141,15 @@ build_case() {
     panes_picker+="work-$i	$pane	$cmd	$((1000 + i))	/tmp/manual-$i"$'\n'
     opts+="$pane|@agent_state=$manual_state"$'\n'
     opts+="$pane|@agent_state_at=$now"$'\n'
+    daemon_rows+="work-$i"$'\037'"$pane"$'\037'"$manual_state"$'\037'"$now"$'\n'
   done
 
-  TMUX_MOCK_STATUS_OPTIONS="$(status_options)"
-  export TMUX_MOCK_STATUS_OPTIONS
   export TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-\n@agent_detect_commands=pi codex claude\n@agent_detect_wrappers=node bun npx npm pnpm yarn'
   export TMUX_MOCK_LIST_SESSIONS="${sessions%$'\n'}"
   export TMUX_MOCK_LIST_PANES_STATUS="${panes_status%$'\n'}"
   export TMUX_MOCK_LIST_PANES_PICKER="${panes_picker%$'\n'}"
   export TMUX_MOCK_TARGET_OPTIONS="${opts%$'\n'}"
+  export DAEMON_SNAPSHOT_ROWS="${daemon_rows%$'\n'}"
 }
 
 check_threshold() {
@@ -170,29 +176,24 @@ check_growth() {
 
 iterations="${PERF_ITERATIONS:-7}"
 warmup="${PERF_WARMUP:-2}"
-max_status_ms="${PERF_MAX_STATUS_MS:-2000}"
 max_picker_ms="${PERF_MAX_PICKER_MS:-5000}"
 max_growth="${PERF_MAX_GROWTH:-3.5}"
 
 printf 'Smoke performance test (mock tmux, %s warmup + %s measured runs/case)\n' "$warmup" "$iterations"
-printf 'Thresholds: status median<=%sms, picker median<=%sms, 50->100 growth<=%sx (0 disables)\n\n' \
-  "$max_status_ms" "$max_picker_ms" "$max_growth"
+printf 'Thresholds: picker median<=%sms, 50->100 growth<=%sx (0 disables)\n\n' \
+  "$max_picker_ms" "$max_growth"
 
 declare -A medians=()
 
 for n in 10 50 100; do
   printf 'case: %s managed sessions + %s manual panes\n' "$n" "$n"
   build_case "$n"
-  measure "status.sh n=$n" 'scripts/status.sh'
-  medians["status|$n"]="$PERF_MEDIAN_MS"
-  check_threshold "status.sh n=$n" "$PERF_MEDIAN_MS" "$max_status_ms"
   measure "picker.sh --list n=$n" 'scripts/picker.sh --list'
   medians["picker|$n"]="$PERF_MEDIAN_MS"
   check_threshold "picker.sh --list n=$n" "$PERF_MEDIAN_MS" "$max_picker_ms"
   printf '\n'
 done
 
-check_growth 'status.sh' "${medians[status|50]}" "${medians[status|100]}"
 check_growth 'picker.sh --list' "${medians[picker|50]}" "${medians[picker|100]}"
 
 if [ "$FAILURES" -gt 0 ]; then

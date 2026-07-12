@@ -22,7 +22,7 @@ or swap agents via `@agent_agents`.
 - 🚀 **Launcher** (`prefix` + `y`) to open or attach an agent session for the
   current directory.
 - ❌ **Quick kill** (`ctrl-x`) from the picker.
-- 📊 **Status-line summary** (opt-in): a compact `agents 1● 2✦ 1✓` badge in
+- 📊 **Status-line summary**: a compact `agents 1● 2✦ 1✓` badge in
   `status-right` counting self-reported blocked / working / done states without
   scanning process trees on every refresh.
 
@@ -31,7 +31,7 @@ or swap agents via `@agent_agents`.
 - **tmux ≥ 3.3** for borderless `display-popup` (`-B`)
 - **fzf** for the picker UI
 - **Pi** CLI (`pi` command) for the default Pi agent (other agents can be configured instead)
-- bash; macOS or Linux
+- bash and a Rust toolchain; macOS or Linux
 
 For best Pi keyboard behavior inside tmux, Pi recommends:
 
@@ -51,6 +51,13 @@ set -g extended-keys-format csi-u
 git clone <this-repo-url> ~/clone/path/tmux-agents-session-manager
 ```
 
+Build the bundled daemon once:
+
+```sh
+cd ~/clone/path/tmux-agents-session-manager
+cargo build --release --manifest-path daemon/Cargo.toml
+```
+
 Add to `~/.tmux.conf`, then reload tmux:
 
 ```tmux
@@ -65,7 +72,13 @@ After publishing/renaming the repo, use the normal tpm form:
 set -g @plugin 'yourname/tmux-agents-session-manager'
 ```
 
-Then press `prefix` + <kbd>I</kbd>.
+Then press `prefix` + <kbd>I</kbd> and build the daemon from the installed
+plugin directory:
+
+```sh
+cd ~/.tmux/plugins/tmux-agents-session-manager
+cargo build --release --manifest-path daemon/Cargo.toml
+```
 
 ## Usage
 
@@ -114,59 +127,45 @@ claude=claude"
 - `@agent_detect_wrappers` controls which wrapper commands (default `node bun npx npm pnpm yarn`) are allowed to trigger a child-process scan.
 
 Make sure each agent's command is on your `PATH` (`pi`, `codex`, `claude`).
-Only **pi** reports live `working` / `done` status out of the box via its
-bundled extension; see [Status for other agents](#status-for-other-agents).
+Pi reports through the bundled extension, Codex reports when its hooks are
+configured, and Claude uses daemon polling as described below.
 
-## Status extension
+## Unified status daemon
 
-By default, the launcher runs Pi with the bundled extension:
+A single-thread-owned Rust daemon is the authoritative runtime state center for
+each tmux server. It uses a private mode-0600 Unix socket, restores Pi/Codex
+mirror options once at startup, and then updates state only from events. The
+Pi extension and `scripts/state.sh` continue writing tmux mirror options so the
+daemon can recover after restart and the picker can display reliable state if a
+daemon snapshot is temporarily unavailable.
 
-```sh
-pi -e /path/to/tmux-agents-session-manager/extensions/tmux-state.ts
-```
+| Agent event | State |
+| --- | --- |
+| session start / shutdown | `idle` |
+| turn start | `working` |
+| turn end while not watched | `done` |
+| turn end while watched | `idle` |
 
-The extension writes these tmux options on the nested Pi session:
+Opening a `done` pane sends `Seen`; `done` remains until then. `working` and
+`blocked` expire after `@agent_state_ttl`. Managed-session exits are sent by
+picker actions and an appended `session-closed` tmux hook when available.
+`after-kill-pane` is intentionally not used because tmux does not expose the
+removed pane identity there. Existing hooks are never overwritten.
 
-| Pi event           | tmux state | Meaning              |
-| ------------------ | ---------- | -------------------- |
-| `session_start`    | `idle`     | Pi is open           |
-| `agent_start`      | `working`  | Pi is processing     |
-| `agent_end`        | `done`\*   | The turn finished and has not been opened yet |
-| `session_shutdown` | `idle`     | Pi is shutting down  |
+### Pi and Codex reporting
 
-\* If the pane is already visible when the turn ends (its session is attached,
-its window is active, and it is the active pane), `agent_end` reports `idle`
-directly instead of `done` — you were already watching it finish, so there is
-nothing left to "discover" later and the right status bar does not get stuck
-showing `done` for the current session/pane. tmux can only detect client
-attachment, not terminal focus, so a pane in an attached-but-unfocused terminal
-may also be treated as seen.
+The default Pi command loads `extensions/tmux-state.ts`. Each extension process
+creates a fresh process generation and sends monotonic sequences, preventing an
+old event or reused pane id from overwriting a newer process.
 
-Opening a `done` session from the picker or launcher marks it `idle` again.
-
-If you override `@agent_default_command` and do not load the extension, the picker still
-lists, previews, jumps, and kills sessions; status may stay `idle` or show
-`unknown`.
-
-### Status for other agents
-
-Codex, Claude Code, and any other agent are managed (listed, previewed, jumped,
-killed) without any extra setup — but they show `unknown` status until they
-report state. The state layer is agent-agnostic: anything that runs
-`scripts/state.sh <state>` updates the same `@agent_state` the picker and status
-line read.
+Codex can report through hooks:
 
 ```sh
-# From inside the agent's tmux pane:
-/path/to/tmux-agents-session-manager/scripts/state.sh working
-/path/to/tmux-agents-session-manager/scripts/state.sh done
+/path/to/plugin/scripts/state.sh working
+/path/to/plugin/scripts/state.sh done
 ```
 
-Wire these into whatever hooks your agent provides (e.g. a pre/post-prompt hook,
-or a wrapper script) to get the same `working` / `done` badges that pi gets from
-its bundled extension.
-
-Codex reports full state through its `[hooks]` config. Add to `~/.codex/config.toml`:
+For Codex, configure these command hooks (replace the plugin path):
 
 ```toml
 [[hooks.SessionStart]]
@@ -188,203 +187,96 @@ command = "/path/to/tmux-agents-session-manager/scripts/state.sh done"
 timeout = 1
 ```
 
-This gives Codex the animated `working` badge on turn start (the old `notify`
-hook could only report `done`).
+`state.sh` keeps one generation for the long-lived hook parent and monotonic
+pane sequence, while preserving the watched-pane `done` to `idle` behavior.
 
-`state.sh` applies the same "skip `done` when the pane is being watched"
-shortcut as the bundled Pi extension: when the `Stop` hook fires while the pane
-is visible (its session is attached and this is the active pane in the active
-window), the recorded state is downgraded from `done` to `idle` so the status
-bar does not get stuck showing `done` for the current session/pane.
+### Claude adaptive polling
 
-## Status line summary
+A plugin-launched Claude sends `ClaudeStarted`; a manual Claude found by the
+picker sends `ClaudeDiscovered`. Therefore a manually started Claude that has
+never been shown in the picker is **not guaranteed to enter the status line**.
+Claude uses stable `sessionId` identity, never PID identity.
 
-Show a compact badge of self-reported agent states in your tmux status bar, so
-you know when work finished or got blocked without opening the picker. The status
-script does not discover agents by inspecting commands or walking process trees;
-manual-pane discovery is reserved for the picker (`prefix` + `u`).
+Only one Claude query can be in flight. The default intervals are 3 seconds
+while working and 10 seconds while idle/waiting. A newly launched target gets
+three successful-query attempts to register; after it has been observed, a
+successful query that no longer returns it removes the target and stops polling
+when no Claude targets remain. Deadlines start at query completion. Timeout, non-zero exit, and JSON
+errors preserve the last successful states and apply bounded backoff. Timeout
+kills and reaps the child process group.
 
-Enable auto-injection into `status-right`:
+The collector runs the user-verified command `claude agents --json`. Its real
+records contain `pid`, `cwd`, `kind`, `startedAt`, `sessionId`, `name`, and
+`status`. Only `kind=interactive` is used. `busy` maps to `working`, `waiting`
+maps to `blocked`, and `idle` maps to `idle`. The collector resolves
+each PID to its TTY and then matches that TTY to a tmux pane/session. PID is
+used only for this live association; `sessionId` remains the long-lived
+identity. Each poll starts one `claude agents --json`, one full-table `ps`
+snapshot, and one `tmux list-panes` query regardless of the number of returned
+agents; it never starts one `ps` per agent.
 
-```tmux
-set -g @agent_status on
-```
+### Zero-fork animated status line
 
-Output looks like:
+The status line expands only `#{@agent_status_cache}` and forks no process.
+While `working > 0`, the daemon advances and publishes animation frames (default
+one second). At `working = 0` it stops animation and resets the frame index.
+The daemon publishes only when the final rendered summary changes. A publish
+uses one tmux option update plus explicit refreshes for cached client names; the
+status format itself remains zero-fork. Cache publication and redraw are
+separate: a successful option update remains valid if an explicit client
+refresh fails.
 
-```
-agents 1● 2✦ 1✓
-```
-
-**Event-driven, not polled.** The badge is served from a cached tmux option
-(`@agent_status_cache`) that agents update when their state changes, so an idle
-or finished workspace costs **zero** background CPU — tmux just expands the
-cached string. For `working`/`blocked` TTL expiry, tmux holds one delayed
-`run-shell` timer for the nearest expiry and refreshes the cache once when it
-fires; no shell process sleeps in the background. The one polling exception is
-the spinner: while any agent is `working`, tmux runs the summary once per
-interval to advance the animation frame, then stops forking entirely as soon as
-work drops to zero. (tmux lazily evaluates only the selected branch of its
-`#{?...}` format, so the polling branch is never run while idle.)
-
-Agents refresh the cache by calling `scripts/status.sh --refresh` when they
-report a state — the bundled Pi extension and `scripts/state.sh` both do this
-automatically, so custom hook-based integrations get it for free.
-
-| Segment | State     | Meaning                |
-| ------- | --------- | ---------------------- |
-| `●`     | `blocked` | needs input (shown first) |
-| `✦`     | `working` | actively running       |
-| `✓`     | `done`    | finished, unseen       |
-| `·`     | `idle`    | hidden unless enabled  |
-
-Only non-zero groups appear, and nothing is printed when there are no reported
-agent states. Prefer to place it yourself? Skip `@agent_status` and embed the
-script directly. Note that a raw embed polls once per `status-interval` (it does
-not use the cached, event-driven path):
-
-```tmux
-set -g status-right '#(~/clone/path/tmux-agents-session-manager/scripts/status.sh) %H:%M'
-```
-
-### Fallback slot (`--or` / `--or-host`)
-
-When there are no reported agent states the script prints nothing. To reuse the
-same status-right slot for something else when idle, pass a fallback:
-
-```tmux
-# Show the agents badge while active, otherwise the short hostname.
-set -g status-right '#(~/clone/path/tmux-agents-session-manager/scripts/status.sh --or-host)'
-
-# Or any literal fallback text.
-set -g status-right '#(~/clone/path/tmux-agents-session-manager/scripts/status.sh --or "no agents")'
-```
-
-Use `--or-host` rather than `#h`: inside `#(...)`, tmux does not expand `#h`, so
-it would be passed through literally.
-
-### Animated working icon
-
-Give the `working` count a subtle spinner so active turns stand out:
-
-```tmux
-set -g @agent_status_animate_working 'on'
-set -g @agent_status_anim_frames     '✦ ✷  ✹  ✴'   # space-separated frames
-```
-
-Frames advance roughly once per second (driven by `status-interval`), so keep
-`@agent_status_interval` low for a smooth animation.
+Animation frames are whitespace-separated; a frame itself cannot contain a
+space. The daemon validates non-empty bounded frames, a minimum 250ms animation
+interval, positive Claude intervals/timeouts, and non-negative TTL. Invalid
+reload retains the old config; successful reload immediately reconciles state.
 
 ## Options
 
-Set any of these before the plugin loads:
+Launcher and picker options:
 
 ```tmux
-set -g @agent_launch_key     'y'        # prefix key: launch/open for current dir
-set -g @agent_list_key       'u'        # prefix key: open the picker
-set -g @agent_default_command 'pi'       # pi's command; default loads bundled extension
-set -g @agent_agents         '...'      # name=command registry of launchable agents (see below)
-set -g @agent_launch_menu    'on'       # 'off' skips the agent menu on prefix+y
-set -g @agent_multiple_instances 'on'   # 'off' reuses one session per directory/agent
-set -g @agent_detect_commands 'pi codex claude'  # manual-pane commands to auto-list
-set -g @agent_detect_wrappers 'node bun npx npm pnpm yarn' # wrappers to scan for child agents
-set -g @agent_session_prefix 'agent-'   # tmux session name prefix
-set -g @agent_popup_width    '90%'      # popup width
-set -g @agent_popup_height   '90%'      # popup height
+set -g @agent_launch_key     'y'
+set -g @agent_list_key       'u'
+set -g @agent_default_command 'pi'
+set -g @agent_agents         '...'
+set -g @agent_launch_menu    'on'
+set -g @agent_multiple_instances 'on'
+set -g @agent_detect_commands 'pi codex claude'
+set -g @agent_detect_wrappers 'node bun npx npm pnpm yarn'
+set -g @agent_session_prefix 'agent-'
+set -g @agent_popup_width    '90%'
+set -g @agent_popup_height   '90%'
 ```
 
-Status-line options (only relevant with `@agent_status on` or manual embedding):
+Daemon/status options:
 
 ```tmux
-set -g @agent_status            'on'    # default: auto-appends the summary to status-right; set 'off' to disable
-set -g @agent_status_interval   '1'     # max seconds between refreshes
-set -g @agent_status_show_idle  'off'   # also count idle sessions
-set -g @agent_status_color      'off'   # emit #[fg=...] colours
-set -g @agent_status_sigil      'agents'    # leading marker
-set -g @agent_status_icon_blocked '●'   # per-state icons
-set -g @agent_status_icon_working '✦'
-set -g @agent_status_icon_done    '✓'
-set -g @agent_status_icon_idle    '·'
-set -g @agent_status_color_blocked 'red'    # per-state colours (tmux colour names)
-set -g @agent_status_color_working 'yellow'
-set -g @agent_status_color_done    'cyan'
-set -g @agent_status_color_idle    'green'
-set -g @agent_status_animate_working 'on'   # 'on' animates the working icon
-set -g @agent_status_anim_frames     '✦ ✷  ✹  ✴'  # spinner frames (space-separated)
-set -g @agent_state_ttl              '259200'     # seconds before stale states are ignored; 0 disables
+set -g @agent_status                 'on'
+set -g @agent_status_animate_working 'on'
+set -g @agent_status_show_idle       'off'
+set -g @agent_status_sigil           'agents'
+set -g @agent_status_icon_blocked    '●'
+set -g @agent_status_icon_working    '✦'
+set -g @agent_status_icon_done       '✓'
+set -g @agent_status_icon_idle       '·'
+set -g @agent_status_anim_frames     '✦ ✷ ✹ ✴'
+set -g @agent_animation_interval_ms  '1000'
+set -g @agent_state_ttl              '259200'
+set -g @agent_claude_working_interval '3'
+set -g @agent_claude_idle_interval    '10'
+set -g @agent_claude_timeout          '2'
+set -g @agent_claude_failure_max_interval '30'
+set -g @agent_daemon_binary '/path/to/daemon/target/release/tmux-agents-state-daemon'
 ```
 
-The stale-state TTL prevents crashed/killed agents from leaving a permanent
-`working`/`blocked` badge when they cannot report shutdown cleanly.
-
-The status script also exposes a path-free reference via the
-`@agent_status_script` tmux option (set by the plugin on load), so your config
-never has to hardcode the install directory:
-
-```tmux
-set -g status-right '#(#{@agent_status_script} --or-host)'
-```
-
-For a styled Powerline-style right segment, keep your existing separators and
-put the script in the slot that would otherwise show the host:
-
-```tmux
-set -g status-right "#[fg=#586e75,bg=#292a30,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#586e75]#[fg=#657b83,bg=#586e75,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#657b83]#[fg=#93a1a1,bg=#657b83,nobold,nounderscore,noitalics]#[fg=#15161E,bg=#93a1a1,bold] #{?@agent_status_script,#(#{@agent_status_script} --or-host),#h} "
-```
-
-That Powerline example uses `#(... --or-host)`, which **forks the script once
-per `status-interval`** even when nothing is happening. For a zero-fork,
-event-driven segment, replace the badge slot with the same cached/animated
-expression the plugin injects by default:
-
-```tmux
-set -g status-right "#[fg=#586e75,bg=#292a30,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#586e75]#[fg=#657b83,bg=#586e75,nobold,nounderscore,noitalics]#[fg=#93a1a1,bg=#657b83]#[fg=#93a1a1,bg=#657b83,nobold,nounderscore,noitalics]#[fg=#15161E,bg=#93a1a1,bold] #{?@agent_status_working,#(#{@agent_status_script} --animate),#{?@agent_status_cache,#{@agent_status_cache},#h}} "
-```
-
-How this segment behaves:
-
-- **Working:** `@agent_status_working` is set, so tmux forks
-  `status.sh --animate` once per `status-interval` to advance the spinner.
-- **Idle / done:** tmux expands the cached `@agent_status_cache` string with
-  **zero forks** (agents refresh it via `status.sh --refresh` only on state
-  changes).
-- **No agents:** the cache is empty, so the nested `#{?@agent_status_cache,...}`
-  falls back to `#h` (the short hostname). Use `#h` here rather than
-  `--or-host`, because tmux *does* expand `#h` in a plain format string (the
-  `--or-host` flag only exists for the `#(...)` case, where `#h` is passed
-  through literally).
-
-> **Note the `@` prefixes.** The option names are `@agent_status_working`,
-> `@agent_status_cache`, and `@agent_status_script`. Dropping the `@` silently
-> breaks the condition (it can never be true) **and** defeats the auto-inject
-> guard below, producing a duplicate badge.
-
-### Manual placement auto-detects and skips auto-injection
-
-You do **not** have to set `@agent_status off` when you place the badge
-yourself. On load, the plugin only prepends its summary to `status-right` when
-that string does **not** already reference the status feature. It checks for
-either marker:
+The plugin sets `@agent_daemon_binary` to its release build by default. It does
+not install a toolchain or build code during tmux startup. Plugin reload sends
+`ReloadConfig`; explicit inspection/reload is also available:
 
 ```sh
-case "$current_right" in
-*"@agent_status_working"*|*".../scripts/status.sh"*) : ;;   # already present → skip
-*) tmux set-option -g status-right "$summary $current_right" ;;
-esac
-```
-
-So as long as your manual `status-right` contains `@agent_status_working` (or a
-literal path to `scripts/status.sh`), the plugin detects it and does **not**
-append a second badge — even with `@agent_status on` (the default). It still
-sets `@agent_status_script`, primes the cache once, and may tighten
-`status-interval` down to `@agent_status_interval` so the spinner animates
-smoothly. If you prefer the plugin to touch nothing but the script path and
-cache, set `@agent_status off` explicitly before it loads.
-
-The actual default for `@agent_default_command` is equivalent to:
-
-```tmux
-set -g @agent_default_command "pi -e '/path/to/tmux-agents-session-manager/extensions/tmux-state.ts'"
+scripts/daemon.sh snapshot
+scripts/daemon.sh reload
 ```
 
 ## How it works
@@ -394,16 +286,13 @@ set -g @agent_default_command "pi -e '/path/to/tmux-agents-session-manager/exten
   that agent, records the origin window, agent, and instance, then attaches to it
   in a popup. With `@agent_multiple_instances off`, it instead opens or reuses the
   unnumbered session.
-- The bundled **Pi extension** updates `@agent_state` / `@agent_state_at` as Pi starts
-  and finishes turns; other agents can do the same via `scripts/state.sh`.
+- The bundled **Pi extension** and `scripts/state.sh` mirror recovery options and send sequenced events to the per-server daemon.
 - The **picker** lists tmux sessions matching the prefix and non-prefixed panes
   whose current command is in `@agent_detect_commands` (or a configured wrapper
   whose child process matches), reads state for managed sessions, shows a live
   `capture-pane` preview and a per-row tool column, and jumps to the selected
   session or pane. This is where process discovery happens.
-- The **status-line script** only reads self-reported `@agent_state` values from
-  managed sessions and panes; it does not scan commands or process trees, so it
-  is safe to run frequently from `status-right`.
+- The **daemon** owns live state, Claude polling, TTL and animation, and publishes a cache-only zero-fork status segment.
 - Pressing `prefix` + `u` from inside an agent popup first detaches that popup,
   then reopens the picker on the outer tmux client.
 
@@ -420,25 +309,27 @@ Many thanks to [Takuya Matsuyama (craftzdog)](https://github.com/craftzdog) for 
 
 ## Development
 
-Run the lightweight unit test suite with:
+Build and test the Rust daemon, then run the Bash integration suite:
 
 ```sh
+cargo test --manifest-path daemon/Cargo.toml
 bash tests/run.sh
 ```
 
-Run smoke performance checks for the hot paths (`status.sh` and
-`picker.sh --list`) with:
+Run the picker discovery smoke performance check with:
 
 ```sh
 bash tests/perf_smoke.sh
 ```
 
 The performance smoke test simulates 10/50/100 managed sessions plus manual
-agent panes using a local fake `tmux` binary. Tune or disable thresholds with:
+agent panes using a local fake `tmux` binary. Daemon state-loop behavior is
+covered by Rust tests and the status line itself forks zero processes. Tune or
+disable thresholds with:
 
 ```sh
-PERF_ITERATIONS=10 PERF_MAX_STATUS_MS=2000 PERF_MAX_PICKER_MS=5000 bash tests/perf_smoke.sh
-PERF_MAX_STATUS_MS=0 PERF_MAX_PICKER_MS=0 bash tests/perf_smoke.sh
+PERF_ITERATIONS=10 PERF_MAX_PICKER_MS=5000 bash tests/perf_smoke.sh
+PERF_MAX_PICKER_MS=0 bash tests/perf_smoke.sh
 ```
 
 The tests use a local fake `tmux` binary, so they do not require a running tmux

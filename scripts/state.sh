@@ -1,56 +1,60 @@
 #!/usr/bin/env bash
-# Record an agent session's state on its tmux session, for the picker.
+# Report Pi/Codex-compatible hook state to the Rust state daemon.
 # Usage: state.sh <blocked|working|done|idle>
-#
-# This is useful for custom integrations. The bundled Pi extension at
-# extensions/tmux-state.ts updates the same @agent_state /
-# @agent_state_at options.
-[ -z "$TMUX_PANE" ] && exit 0
-
-SOURCE_PATH="${BASH_SOURCE[0]}"
-DIR="${SOURCE_PATH%/*}"
-[ "$DIR" = "$SOURCE_PATH" ] && DIR=.
-DIR="$(cd "$DIR" && pwd)"
+set -uo pipefail
+[ -n "${TMUX_PANE:-}" ] || exit 0
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
 . "$DIR/helpers.sh"
 
-now="$(date +%s)"
 state="${1:-idle}"
-case "$state" in
-blocked|working|done|idle) ;;
-*) exit 0 ;;
-esac
-
-# If the user is actively watching this pane right now, there is nothing left to
-# "discover" later, so downgrade "done" to "idle" instead of leaving a stale
-# badge in the right status bar for the current session/pane. This mirrors the
-# bundled Pi extension's agent_end shortcut, so agents wired through hooks (e.g.
-# Codex's Stop hook running state.sh done) behave like pi.
+case "$state" in blocked|working|done|idle) ;; *) exit 0 ;; esac
 if [ "$state" = "done" ] && is_watched_agent_pane "$TMUX_PANE"; then
   state=idle
 fi
 
-# Build one tmux invocation instead of spawning a process for every option.
-args=(
-  set-option -p -t "$TMUX_PANE" @agent_state "$state"
+session="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || true)"
+tool="$(tmux show-options -pqv -t "$TMUX_PANE" @agent_tool 2>/dev/null || true)"
+if [ -z "$tool" ] && [ -n "$session" ] && is_managed_session "$session"; then
+  tool="$(tmux show-options -qv -t "$session" @agent_tool 2>/dev/null || true)"
+fi
+[ -n "$tool" ] || tool="${AGENT_TOOL:-codex}"
+[ "$tool" != claude ] || exit 0
+
+# Hook subprocesses share their long-lived agent parent's process start identity.
+# This survives repeated hook calls while rotating when the pane id is reused.
+parent_fingerprint="$(ps -o pid=,lstart= -p "$PPID" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//' || true)"
+[ -n "$parent_fingerprint" ] || parent_fingerprint="$PPID:$(date +%s)"
+stored_fingerprint="$(tmux show-options -pqv -t "$TMUX_PANE" @agent_process_fingerprint 2>/dev/null || true)"
+generation="$(tmux show-options -pqv -t "$TMUX_PANE" @agent_process_generation 2>/dev/null || true)"
+sequence="$(tmux show-options -pqv -t "$TMUX_PANE" @agent_sequence 2>/dev/null || true)"
+if [ "$stored_fingerprint" != "$parent_fingerprint" ] || [ -z "$generation" ]; then
+  generation="$(date +%s)-$$-${RANDOM:-0}"
+  sequence=0
+fi
+case "$sequence" in ''|*[!0-9]*) sequence=0 ;; esac
+sequence=$((sequence + 1))
+now="$(date +%s)"
+mirror_args=(
+  set-option -p -t "$TMUX_PANE" @agent_tool "$tool"
+  \; set-option -p -t "$TMUX_PANE" @agent_process_fingerprint "$parent_fingerprint"
+  \; set-option -p -t "$TMUX_PANE" @agent_process_generation "$generation"
+  \; set-option -p -t "$TMUX_PANE" @agent_sequence "$sequence"
+  \; set-option -p -t "$TMUX_PANE" @agent_state "$state"
   \; set-option -p -t "$TMUX_PANE" @agent_state_at "$now"
 )
-
-# Session-scoped state is authoritative only for managed sessions (one agent per
-# tmux session). Manual panes can share a session, so session-level state there
-# would be last-writer-wins pollution and may leak through tmux format fallback.
-session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
 if [ -n "$session" ] && is_managed_session "$session"; then
-  args+=(
+  mirror_args+=(
     \; set-option -t "$session" @agent_state "$state"
     \; set-option -t "$session" @agent_state_at "$now"
+    \; set-option -t "$session" @agent_process_generation "$generation"
+    \; set-option -t "$session" @agent_sequence "$sequence"
     \; set-option -t "$session" @agent_pane "$TMUX_PANE"
   )
 fi
+tmux "${mirror_args[@]}" 2>/dev/null || exit 1
 
-tmux "${args[@]}" 2>/dev/null
-
-# Update the event-driven status badge now that state changed, so the cached
-# summary (and the working spinner flag) reflect this report without polling.
-trigger_status_refresh "$DIR"
+json_string() { local value="$1"; value=${value//\\/\\\\}; value=${value//\"/\\\"}; printf '"%s"' "$value"; }
+request="{\"type\":\"Report\",\"tool\":$(json_string "$tool"),\"pane_id\":$(json_string "$TMUX_PANE"),\"process_generation\":$(json_string "$generation"),\"sequence\":$sequence,\"state\":\"$state\",\"session_name\":$(json_string "$session")}"
+"$DIR/daemon.sh" send "$request" >/dev/null 2>&1 || true
 exit 0

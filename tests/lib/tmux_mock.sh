@@ -25,8 +25,8 @@
 #   TMUX_MOCK_FAIL_TARGETS     space-separated targets whose -t queries fail
 #   TMUX_MOCK_FAIL_REFRESH_CLIENT
 #                              non-empty makes refresh-client fail
-#   TMUX_MOCK_IF_SHELL_RESULT  "committed" (default) or "stale" for the
-#                              atomic expiry-cache publication branch
+#   TMUX_MOCK_SHOW_HOOKS       hook names returned by show-hooks -g
+#   TMUX_MOCK_IF_SHELL_RESULT  retained for generic if-shell tests
 #
 # The ps mock is driven by:
 #   TMUX_MOCK_PS_CHILDREN      "ppid=pid pid..." lines
@@ -278,6 +278,9 @@ case "$cmd" in
     done
     exit 1
     ;;
+  show-hooks)
+    printf '%s\n' "${TMUX_MOCK_SHOW_HOOKS:-}"
+    ;;
   refresh-client)
     [ -z "${TMUX_MOCK_FAIL_REFRESH_CLIENT:-}" ]
     ;;
@@ -290,13 +293,12 @@ case "$cmd" in
       printf '%s' stale
     fi
     ;;
-  new-session|set-option|display-popup|kill-session|send-keys|attach-session|switch-client|detach-client)
+  new-session|set-option|set-hook|display-popup|kill-session|send-keys|attach-session|switch-client|detach-client)
     exit 0
     ;;
   run-shell)
-    # Ignore backgrounded refreshes (`run-shell -b .../status.sh --refresh`).
-    # Running them would recurse into status.sh during unrelated tests; the log
-    # entry above is enough to assert the trigger fired.
+    # Background commands are logged but not executed; individual tests invoke
+    # daemon/event clients directly when their output matters.
     exit 0
     ;;
   *)
