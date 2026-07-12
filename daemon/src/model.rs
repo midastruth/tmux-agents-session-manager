@@ -171,10 +171,15 @@ pub struct StateCenter {
     expiry_deadline: Option<Instant>,
     screen_deadline: Option<Instant>,
     published_summary: Option<String>,
+    capture_marker: String,
 }
 
 impl StateCenter {
     pub fn new(server_socket: String, config: Config) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         Self {
             server_socket,
             config,
@@ -185,6 +190,7 @@ impl StateCenter {
             expiry_deadline: None,
             screen_deadline: Some(Instant::now()),
             published_summary: None,
+            capture_marker: format!("--tmux-agents-daemon-split-{nanos:016x}--"),
         }
     }
 
@@ -385,16 +391,34 @@ impl StateCenter {
         let Some(rows) = list_pane_rows(&self.server_socket) else {
             return;
         };
-        let process_table = process_table_snapshot();
-        let mut active_keys = HashSet::new();
-
+        let mut process_table: Option<Option<String>> = None;
+        let mut resolved = Vec::new();
         for row in rows {
-            let Some(tool) = self.resolve_screen_tool(&row, process_table.as_deref()) else {
-                continue;
-            };
+            if let Some(tool) = self.resolve_screen_tool(&row, &mut process_table) {
+                resolved.push((row, tool));
+            }
+        }
+
+        let pane_ids: Vec<&str> = resolved
+            .iter()
+            .map(|(row, _)| row.pane_id.as_str())
+            .collect();
+        let mut screens = capture_panes_batch(&self.server_socket, &self.capture_marker, &pane_ids)
+            .unwrap_or_else(|| {
+                pane_ids
+                    .iter()
+                    .filter_map(|pane_id| {
+                        capture_pane(&self.server_socket, pane_id)
+                            .map(|screen| (pane_id.to_string(), screen))
+                    })
+                    .collect()
+            });
+
+        let mut active_keys = HashSet::new();
+        for (row, tool) in resolved {
             let key = screen_key(&tool, &row.pane_id);
             active_keys.insert(key.clone());
-            let Some(screen) = capture_pane(&self.server_socket, &row.pane_id) else {
+            let Some(screen) = screens.remove(&row.pane_id) else {
                 continue;
             };
             let detection = match tool.as_str() {
@@ -433,7 +457,11 @@ impl StateCenter {
             .retain(|key, record| record.source != Source::Screen || active_keys.contains(key));
     }
 
-    fn resolve_screen_tool(&self, row: &PaneRow, process_table: Option<&str>) -> Option<String> {
+    fn resolve_screen_tool(
+        &self,
+        row: &PaneRow,
+        process_table: &mut Option<Option<String>>,
+    ) -> Option<String> {
         if row.session_name.starts_with(&self.config.prefix) {
             let configured = canonical_screen_tool(&row.configured_tool);
             if configured.is_some() {
@@ -447,9 +475,12 @@ impl StateCenter {
         if !self.config.wrapper_commands.contains(command) {
             return None;
         }
-        process_table.and_then(|table| {
-            resolve_child_screen_tool(row.pane_pid, table, &self.config.detect_commands)
-        })
+        process_table
+            .get_or_insert_with(process_table_snapshot)
+            .as_deref()
+            .and_then(|table| {
+                resolve_child_screen_tool(row.pane_pid, table, &self.config.detect_commands)
+            })
     }
 
     fn screen_display_state(
@@ -752,6 +783,54 @@ fn capture_pane(server_socket: &str, pane_id: &str) -> Option<String> {
             SCREEN_CAPTURE_HISTORY_LINES,
         ],
     )
+}
+
+/// Captures every listed pane in a single tmux invocation by chaining
+/// `capture-pane ; display-message` per pane and splitting on the marker.
+/// tmux aborts the whole chain if any one target no longer exists (e.g. a
+/// pane closed between listing and capture), so callers must treat `None`
+/// as "fall back to capturing panes one at a time" rather than as data loss.
+fn capture_panes_batch(
+    server_socket: &str,
+    marker: &str,
+    pane_ids: &[&str],
+) -> Option<HashMap<String, String>> {
+    if pane_ids.is_empty() {
+        return Some(HashMap::new());
+    }
+    let mut args: Vec<String> = vec!["-S".into(), server_socket.into()];
+    for (index, pane_id) in pane_ids.iter().enumerate() {
+        if index > 0 {
+            args.push(";".into());
+        }
+        args.extend([
+            "capture-pane".into(),
+            "-p".into(),
+            "-J".into(),
+            "-t".into(),
+            (*pane_id).into(),
+            "-S".into(),
+            SCREEN_CAPTURE_HISTORY_LINES.into(),
+            ";".into(),
+            "display-message".into(),
+            "-p".into(),
+            marker.into(),
+        ]);
+    }
+    let output = Command::new("tmux").args(&args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let delimiter = format!("{marker}\n");
+    let mut map = HashMap::with_capacity(pane_ids.len());
+    let mut rest = text.as_str();
+    for pane_id in pane_ids {
+        let pos = rest.find(&delimiter)?;
+        map.insert((*pane_id).to_string(), rest[..pos].to_string());
+        rest = &rest[pos + delimiter.len()..];
+    }
+    Some(map)
 }
 
 fn is_pane_visible(server_socket: &str, pane_id: &str) -> bool {
