@@ -29,7 +29,7 @@ fi
 # after-kill-pane, so only session-closed can provide a reliable exit target.
 event_q=$(printf '%q' "$CURRENT_DIR/scripts/event.sh")
 available_hooks="$(tmux show-hooks -g 2>/dev/null || true)"
-if printf '%s\n' "$available_hooks" | grep -qx 'session-closed'; then
+if printf '%s\n' "$available_hooks" | grep -Eq '^session-closed($|\[|[[:space:]])'; then
   existing_hook="$(tmux show-hooks -g session-closed 2>/dev/null || true)"
   if [[ "$existing_hook" != *"$CURRENT_DIR/scripts/event.sh"* ]]; then
     tmux set-hook -ag session-closed "run-shell \"$event_q exited-session '#{hook_session_name}'\""

@@ -528,6 +528,13 @@ assert_not_contains 'entrypoint skips pane hook without reliable killed-pane ide
 assert_contains 'entrypoint appends supported session lifecycle hook' "$log_contents" $'set-hook\t-ag\tsession-closed'
 
 reset_mocks
+TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
+TMUX_MOCK_SHOW_HOOKS=$'session-closed[0] run-shell "user hook"'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'entrypoint appends session lifecycle hook when user hook already exists' "$log_contents" $'set-hook\t-ag\tsession-closed'
+
+reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_status=off
 status-right=%H:%M'
 run_entrypoint >/dev/null
