@@ -105,8 +105,20 @@ render_menu() {
   printf '%s' "$bottom"
 }
 
+# The menu is drawn with the top border on terminal row 1, so entry i (0-based)
+# occupies row i+2. Convert an SGR mouse row back to an entry index; prints the
+# index when the row lands on an entry, otherwise returns non-zero.
+mouse_row_to_index() {
+  local row="$1" count="$2" idx
+  [[ "$row" =~ ^[0-9]+$ ]] || return 1
+  idx=$((row - 2))
+  [ "$idx" -ge 0 ] && [ "$idx" -lt "$count" ] || return 1
+  printf '%s' "$idx"
+}
+
 select_agent() {
   local selected=0 count key rest idx
+  local intro kind mouse final ch button row
   count=${#names[@]}
   [ "$count" -gt 0 ] || exit 0
   [ -n "$select_out" ] || exit 0
@@ -122,13 +134,37 @@ select_agent() {
       printf '%s' "${names[$selected]}" >"$select_out"; exit 0 ;;
     q|Q) exit 0 ;;
     $'\x1b')
-      # Support arrows as the native tmux menu does; a bare Esc cancels.
-      rest=''
-      IFS= read -rsn2 -t 0.03 rest || true
-      case "$rest" in
-      '[B') selected=$(((selected + 1) % count)) ;;         # Down
-      '[A') selected=$(((selected + count - 1) % count)) ;; # Up
-      *) exit 0 ;;
+      # Escape sequences carry arrow keys and SGR mouse reports; a bare Esc
+      # (no following bytes) cancels. Read the intro byte by byte so a mouse
+      # report of arbitrary length is consumed fully instead of leaking bytes
+      # into the next read and corrupting the menu.
+      IFS= read -rsn1 -t 0.03 intro || exit 0
+      [ "$intro" = '[' ] || exit 0
+      IFS= read -rsn1 -t 0.03 kind || exit 0
+      case "$kind" in
+      A) selected=$(((selected + count - 1) % count)) ;; # Up
+      B) selected=$(((selected + 1) % count)) ;;         # Down
+      '<')
+        # SGR mouse report: ESC [ < button ; col ; row (M=press | m=release).
+        # Accumulate the numeric payload until the terminating M/m.
+        mouse=''
+        final=''
+        while IFS= read -rsn1 -t 0.1 ch; do
+          case "$ch" in
+          M|m) final="$ch"; break ;;
+          *) mouse="$mouse$ch" ;;
+          esac
+        done
+        button="${mouse%%;*}"
+        rest="${mouse#*;}"
+        row="${rest#*;}"
+        # Left-button press on an entry row selects and launches it.
+        if [ "$button" = '0' ] && [ "$final" = 'M' ] &&
+          idx=$(mouse_row_to_index "$row" "$count"); then
+          printf '%s' "${names[$idx]}" >"$select_out"
+          exit 0
+        fi
+        ;;
       esac
       ;;
     [1-9])
@@ -143,7 +179,11 @@ select_agent() {
 }
 
 if [ -n "$select_out" ]; then
-  trap 'printf "\033[?25h"' EXIT
+  # Enable SGR mouse reporting (1000: button events, 1006: SGR extended coords)
+  # so clicks arrive as escape sequences. Restore the cursor and disable mouse
+  # reporting on exit so the terminal is left in a clean state.
+  printf '\033[?1000h\033[?1006h'
+  trap 'printf "\033[?1000l\033[?1006l\033[?25h"' EXIT
   select_agent
 fi
 

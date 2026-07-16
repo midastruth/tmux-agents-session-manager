@@ -119,8 +119,9 @@ claude=claude"
 
 - `prefix` + `y` shows a compact tmux menu for these agents (pi/codex/claude),
   with entries like `pi (1)`, `codex (2)`, `claude (3)`. Use `Ctrl+n` /
-  `Ctrl+p` to move, or number keys to select. With a single agent configured,
-  or `@agent_launch_menu off`, it launches directly with no menu.
+  `Ctrl+p` or the arrow keys to move, number keys to jump, or click an
+  entry with the mouse to launch it. With a single agent configured, or
+  `@agent_launch_menu off`, it launches directly with no menu.
 - Sessions are **namespaced and numbered per agent**
   (`agent-<agent>-<hash>-<instance>`), so the same directory can run pi, codex,
   and claude—or multiple copies of any one of them—without colliding.
