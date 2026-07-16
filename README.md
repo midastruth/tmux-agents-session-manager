@@ -25,6 +25,10 @@ or swap agents via `@agent_agents`.
 - 📊 **Status-line summary**: a compact `agents 1● 2✦ 1✓` badge in
   `status-right` counting blocked / working / done states from the daemon cache
   without forking from the status line.
+- 🖱️ **Clickable status badges** (requires `set -g mouse on`): left-click the
+  `[+]` launch badge to open an agent for the current directory, or left-click
+  the agent summary badge to open the picker — the same actions as `prefix` + `y`
+  and `prefix` + `u`.
 
 ## Prerequisites
 
@@ -201,6 +205,21 @@ space. The daemon validates non-empty bounded frames, minimum 250ms animation
 and screen-detection intervals, and non-negative TTL. Invalid reload retains the
 old config; successful reload immediately reconciles state.
 
+### Clickable status badges
+
+With `@agent_status_mouse on` (the default) and tmux `set -g mouse on`, the
+status line wraps the summary in two user-defined mouse ranges. The
+`@agent_status_launch_label` badge (default `[+]`) is always shown so there is a
+stable click target even when no agents are running; the agent summary range has
+zero width while the cache is empty. Left-clicking the launch badge runs the
+launcher for the active pane's directory (same as `prefix` + `y`), and
+left-clicking the summary badge opens the picker (same as `prefix` + `u`).
+
+The plugin binds `MouseDown1Status` and dispatches only its own ranges; clicks
+elsewhere on the status line fall back to tmux's default `switch-client`. The
+range markers add no `#()` expansion, so the status line stays zero-fork. Set
+`@agent_status_mouse off` to keep the plain, non-clickable cache badge.
+
 ## Options
 
 Launcher and picker options:
@@ -223,6 +242,8 @@ Daemon/status options:
 
 ```tmux
 set -g @agent_status                 'on'
+set -g @agent_status_mouse           'on'
+set -g @agent_status_launch_label    '[+]'
 set -g @agent_status_animate_working 'on'
 set -g @agent_status_show_idle       'off'
 set -g @agent_status_sigil           'agents'

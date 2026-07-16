@@ -512,7 +512,8 @@ log_contents="$(<"$TMUX_LOG")"
 assert_not_contains 'entrypoint skips duplicate daemon cache marker' "$log_contents" $'set-option	-g	status-right'
 
 reset_mocks
-TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
+TMUX_MOCK_OPTIONS=$'@agent_status_mouse=off
+status-right=%H:%M'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'entrypoint injects cache-only status summary' "$log_contents" $'set-option	-g	status-right	#{@agent_status_cache} %H:%M'
@@ -540,6 +541,52 @@ status-right=%H:%M'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_not_contains 'entrypoint leaves status-right untouched when disabled' "$log_contents" $'set-option	-g	status-right'
+
+# Mouse badges: clickable launch/list ranges plus a MouseDown1Status dispatcher.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'entrypoint wraps badge in clickable launch and list ranges' "$log_contents" $'set-option\t-g\tstatus-right\t#[range=user|agent_launch][+]#[norange] #[range=user|agent_list]#{@agent_status_cache}#[norange] %H:%M'
+assert_contains 'entrypoint binds a status mouse dispatcher' "$log_contents" $'bind-key\t-T\troot\tMouseDown1Status'
+assert_contains 'entrypoint mouse dispatcher preserves default status click' "$log_contents" 'switch-client -t ='
+assert_not_contains 'entrypoint mouse badge status line performs zero forks' "$log_contents" '#('
+
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_status_launch_label=start
+status-right=%H:%M'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'entrypoint honors a custom launch label' "$log_contents" $'#[range=user|agent_launch]start#[norange]'
+
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_status_mouse=off
+status-right=%H:%M'
+run_entrypoint >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'entrypoint keeps plain cache badge when mouse disabled' "$log_contents" $'set-option\t-g\tstatus-right\t#{@agent_status_cache} %H:%M'
+assert_contains 'entrypoint restores default status click when mouse disabled' "$log_contents" $'bind-key\t-T\troot\tMouseDown1Status\tswitch-client\t-t\t='
+
+# status_click.sh routes ranges to the picker and the launcher entry points.
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_session_prefix=agent-'
+TMUX_MOCK_LIST_CLIENTS=$'/dev/pts/9\twork\t400'
+run_bash "scripts/status_click.sh agent_list /dev/pts/9 /tmp/proj @1" >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status_click list range opens the picker on the clicking client' "$log_contents" $'display-popup\t-c\t/dev/pts/9'
+
+reset_mocks
+TMUX_MOCK_OPTIONS=$'@agent_agents=solo=solo-cmd'
+run_bash "scripts/status_click.sh agent_launch /dev/pts/9 /tmp/proj @1" >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status_click launch range creates a session for the pane directory' "$log_contents" $'new-session\t-d\t-s'
+assert_contains 'status_click launch range launches in the pane directory' "$log_contents" $'-c\t/tmp/proj'
+
+reset_mocks
+run_bash "scripts/status_click.sh other /dev/pts/9 /tmp/proj @1" >/dev/null
+assert_eq 'status_click ignores unknown ranges' '0' "$?"
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'status_click does nothing for unknown ranges' "$log_contents" 'display-popup'
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
