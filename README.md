@@ -22,9 +22,9 @@ or swap agents via `@agent_agents`.
 - 🚀 **Launcher** (`prefix` + `y`) to open or attach an agent session for the
   current directory.
 - ❌ **Quick kill** (`ctrl-x`) from the picker.
-- 📊 **Status-line summary**: a compact `agents 1● 2✦ 1✓` badge in
-  `status-right` counting blocked / working / done states from the daemon cache
-  without forking from the status line.
+- 📊 **Status-line summary**: a compact `agents 1● 2✦ 1✓` fragment counting
+  blocked / working / done states from the daemon cache without forking from the
+  status line. Place it anywhere in your own status line.
 - 🖱️ **Clickable status badges** (requires `set -g mouse on`): left-click the
   `[+]` launch badge to open an agent for the current directory, or left-click
   the agent summary badge to open the picker — the same actions as `prefix` + `y`
@@ -189,6 +189,31 @@ When Codex/Claude transitions from `working` or `blocked` to `idle`, the daemon
 publishes `done` if the pane is not currently visible; opening the pane sends
 `Seen` and changes `done` to `idle`.
 
+### Placing the status fragments
+
+The plugin does not modify `status-left` or `status-right`. Instead it publishes
+two placeable fragments that you reference wherever you want:
+
+- `@agent_launch_badge` — the `[+]` launch button.
+- `@agent_summary_badge` — the live agent summary (blocked / working / done).
+
+Wrap each reference in `#{E:...}`. tmux expands a status format only one level,
+and the summary fragment nests the daemon-updated `#{@agent_status_cache}`, so a
+plain `#{@agent_summary_badge}` would show the literal inner format instead of
+the counts. `#{E:...}` forces the extra expansion pass:
+
+```tmux
+set -g status-right '#{E:@agent_launch_badge} #{E:@agent_summary_badge} %H:%M'
+```
+
+Each fragment is independent, so you can split them — for example put the launch
+button in `status-left` and the summary in `status-right`:
+
+```tmux
+set -g status-left  '#{E:@agent_launch_badge} '
+set -g status-right '#{E:@agent_summary_badge} %H:%M'
+```
+
 ### Zero-fork animated status line
 
 The status line expands only `#{@agent_status_cache}` and forks no process.
@@ -207,18 +232,19 @@ old config; successful reload immediately reconciles state.
 
 ### Clickable status badges
 
-With `@agent_status_mouse on` (the default) and tmux `set -g mouse on`, the
-status line wraps the summary in two user-defined mouse ranges. The
-`@agent_status_launch_label` badge (default `[+]`) is always shown so there is a
-stable click target even when no agents are running; the agent summary range has
-zero width while the cache is empty. Left-clicking the launch badge runs the
-launcher for the active pane's directory (same as `prefix` + `y`), and
-left-clicking the summary badge opens the picker (same as `prefix` + `u`).
+With `@agent_status_mouse on` (the default) and tmux `set -g mouse on`, each
+published fragment carries its own user-defined mouse range. The
+`@agent_status_launch_label` badge (default `[+]`) is a stable click target even
+when no agents are running; the agent summary range has zero width while the
+cache is empty. Left-clicking the launch badge runs the launcher for the active
+pane's directory (same as `prefix` + `y`), and left-clicking the summary badge
+opens the picker (same as `prefix` + `u`).
 
 The plugin binds `MouseDown1Status` and dispatches only its own ranges; clicks
 elsewhere on the status line fall back to tmux's default `switch-client`. The
-range markers add no `#()` expansion, so the status line stays zero-fork. Set
-`@agent_status_mouse off` to keep the plain, non-clickable cache badge.
+range markers add no `#()` expansion, so referencing the fragments stays
+zero-fork. Set `@agent_status_mouse off` to publish the fragments without the
+clickable ranges.
 
 ## Options
 

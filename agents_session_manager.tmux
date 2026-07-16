@@ -18,24 +18,25 @@ tmux bind-key "$list_key" run-shell "$list_q '#{client_name}'"
 status_enabled="$(get_tmux_option @agent_status 'on')"
 status_mouse="$(get_tmux_option @agent_status_mouse 'on')"
 if [ "$status_enabled" = on ]; then
-  current_right="$(tmux show-option -gqv status-right)"
-  case "$current_right" in
-  *"@agent_status_cache"*) ;;
-  *)
-    if [ "$status_mouse" = on ]; then
-      # Wrap the badge in user-defined status ranges so tmux reports which part
-      # was clicked via #{mouse_status_range}. The launch label is always
-      # present so there is a stable click target even when no agents run; the
-      # summary range has zero width while @agent_status_cache is empty. Range
-      # markers keep the status line zero-fork: they add no #() expansion.
-      launch_label="$(get_tmux_option @agent_status_launch_label '[+]')"
-      badge="#[range=user|agent_launch]${launch_label}#[norange] #[range=user|agent_list]#{@agent_status_cache}#[norange]"
-      tmux set-option -g status-right "$badge $current_right"
-    else
-      tmux set-option -g status-right '#{@agent_status_cache} '"$current_right"
-    fi
-    ;;
-  esac
+  # Publish two independently-placeable status fragments instead of injecting
+  # status-right. Place either fragment anywhere in your own status-left or
+  # status-right, wrapping the summary in #{E:...} because tmux expands status
+  # formats only one level and the summary fragment nests the daemon-updated
+  # #{@agent_status_cache}:
+  #   set -g status-right '#{E:@agent_launch_badge} #{E:@agent_summary_badge}'
+  launch_label="$(get_tmux_option @agent_status_launch_label '[+]')"
+  if [ "$status_mouse" = on ]; then
+    # Wrap each fragment in its own user-defined status range so tmux reports
+    # which part was clicked via #{mouse_status_range}. The launch badge is a
+    # stable click target even when no agents run; the summary range has zero
+    # width while @agent_status_cache is empty. Range markers add no #()
+    # expansion, so referencing these fragments stays zero-fork.
+    tmux set-option -g @agent_launch_badge "#[range=user|agent_launch]${launch_label}#[norange]"
+    tmux set-option -g @agent_summary_badge '#[range=user|agent_list]#{@agent_status_cache}#[norange]'
+  else
+    tmux set-option -g @agent_launch_badge "$launch_label"
+    tmux set-option -g @agent_summary_badge '#{@agent_status_cache}'
+  fi
 fi
 
 # Left-clicking the launch/list badges routes to the same scripts as the

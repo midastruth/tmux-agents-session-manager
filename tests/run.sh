@@ -495,33 +495,27 @@ DAEMON_SNAPSHOT_ROWS=$'agent-pi\037%1\037working\037100\n'
 out="$(run_bash 'scripts/picker.sh --list')"
 assert_contains 'picker prefers authoritative daemon snapshot over recovery mirror' "$out" $'session\tagent-pi\t🟡 working'
 
-# agents_session_manager.tmux status-right auto-injection guard
+# agents_session_manager.tmux status badge fragment publication
 # The entrypoint is an executable bash script (tpm runs it directly), not a
 # sourced library, so invoke it with `bash <file>` rather than run_bash's
-# `. scripts/...` style. It reads the current status-right via `show-option
-# -gqv status-right`; the mock serves that from TMUX_MOCK_OPTIONS.
+# `. scripts/...` style. It publishes @agent_launch_badge and
+# @agent_summary_badge for the user to place; it never touches status-right.
 run_entrypoint() {
   (cd "$ROOT" && bash agents_session_manager.tmux)
 }
 
-# A cache marker is never duplicated and the status line contains no #() fork.
+# The entrypoint publishes placeable fragments and never rewrites status-right.
 reset_mocks
-TMUX_MOCK_OPTIONS=$'status-right=pre #{@agent_status_cache} post'
+TMUX_MOCK_OPTIONS=$'@agent_status_mouse=off'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_not_contains 'entrypoint skips duplicate daemon cache marker' "$log_contents" $'set-option	-g	status-right'
-
-reset_mocks
-TMUX_MOCK_OPTIONS=$'@agent_status_mouse=off
-status-right=%H:%M'
-run_entrypoint >/dev/null
-log_contents="$(<"$TMUX_LOG")"
-assert_contains 'entrypoint injects cache-only status summary' "$log_contents" $'set-option	-g	status-right	#{@agent_status_cache} %H:%M'
-assert_not_contains 'entrypoint status summary performs zero forks' "$log_contents" '#('
+assert_not_contains 'entrypoint never rewrites status-right' "$log_contents" $'set-option	-g	status-right'
+assert_contains 'entrypoint publishes plain launch badge fragment when mouse disabled' "$log_contents" $'set-option	-g	@agent_launch_badge	[+]'
+assert_contains 'entrypoint publishes plain summary badge fragment when mouse disabled' "$log_contents" $'set-option	-g	@agent_summary_badge	#{@agent_status_cache}'
+assert_not_contains 'entrypoint status fragments perform zero forks' "$log_contents" '#('
 assert_contains 'entrypoint ensures and reloads daemon' "$log_contents" 'daemon.sh ensure'
 
 reset_mocks
-TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
 TMUX_MOCK_SHOW_HOOKS=$'after-kill-pane\nsession-closed'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
@@ -529,42 +523,39 @@ assert_not_contains 'entrypoint skips pane hook without reliable killed-pane ide
 assert_contains 'entrypoint appends supported session lifecycle hook' "$log_contents" $'set-hook\t-ag\tsession-closed'
 
 reset_mocks
-TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
 TMUX_MOCK_SHOW_HOOKS=$'session-closed[0] run-shell "user hook"'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'entrypoint appends session lifecycle hook when user hook already exists' "$log_contents" $'set-hook\t-ag\tsession-closed'
 
 reset_mocks
-TMUX_MOCK_OPTIONS=$'@agent_status=off
-status-right=%H:%M'
+TMUX_MOCK_OPTIONS=$'@agent_status=off'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_not_contains 'entrypoint leaves status-right untouched when disabled' "$log_contents" $'set-option	-g	status-right'
+assert_not_contains 'entrypoint publishes no launch badge when status disabled' "$log_contents" $'set-option	-g	@agent_launch_badge'
+assert_not_contains 'entrypoint publishes no summary badge when status disabled' "$log_contents" $'set-option	-g	@agent_summary_badge'
 
 # Mouse badges: clickable launch/list ranges plus a MouseDown1Status dispatcher.
 reset_mocks
-TMUX_MOCK_OPTIONS=$'status-right=%H:%M'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'entrypoint wraps badge in clickable launch and list ranges' "$log_contents" $'set-option\t-g\tstatus-right\t#[range=user|agent_launch][+]#[norange] #[range=user|agent_list]#{@agent_status_cache}#[norange] %H:%M'
+assert_contains 'entrypoint wraps launch fragment in a clickable range' "$log_contents" $'set-option\t-g\t@agent_launch_badge\t#[range=user|agent_launch][+]#[norange]'
+assert_contains 'entrypoint wraps summary fragment in a clickable range' "$log_contents" $'set-option\t-g\t@agent_summary_badge\t#[range=user|agent_list]#{@agent_status_cache}#[norange]'
 assert_contains 'entrypoint binds a status mouse dispatcher' "$log_contents" $'bind-key\t-T\troot\tMouseDown1Status'
 assert_contains 'entrypoint mouse dispatcher preserves default status click' "$log_contents" 'switch-client -t ='
-assert_not_contains 'entrypoint mouse badge status line performs zero forks' "$log_contents" '#('
+assert_not_contains 'entrypoint mouse badge fragments perform zero forks' "$log_contents" '#('
 
 reset_mocks
-TMUX_MOCK_OPTIONS=$'@agent_status_launch_label=start
-status-right=%H:%M'
+TMUX_MOCK_OPTIONS=$'@agent_status_launch_label=start'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'entrypoint honors a custom launch label' "$log_contents" $'#[range=user|agent_launch]start#[norange]'
 
 reset_mocks
-TMUX_MOCK_OPTIONS=$'@agent_status_mouse=off
-status-right=%H:%M'
+TMUX_MOCK_OPTIONS=$'@agent_status_mouse=off'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
-assert_contains 'entrypoint keeps plain cache badge when mouse disabled' "$log_contents" $'set-option\t-g\tstatus-right\t#{@agent_status_cache} %H:%M'
+assert_contains 'entrypoint publishes plain summary fragment when mouse disabled' "$log_contents" $'set-option\t-g\t@agent_summary_badge\t#{@agent_status_cache}'
 assert_contains 'entrypoint restores default status click when mouse disabled' "$log_contents" $'bind-key\t-T\troot\tMouseDown1Status\tswitch-client\t-t\t='
 
 # status_click.sh routes ranges to the picker and the launcher entry points.
