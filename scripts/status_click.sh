@@ -24,6 +24,14 @@ agent_launch)
   # active pane's directory, remembering the window that started it.
   exec "$DIR/launch_menu.sh" "$path" "$window"
   ;;
+agent_detach)
+  # Click-to-close the agent popup: detach only the client that was clicked, so
+  # other terminals attached to the same managed session keep running. The
+  # detach badge is only drawn inside managed sessions, so this always targets a
+  # popup-hosted client; the agent session itself stays alive in the background.
+  [ -n "$client" ] || exit 0
+  exec tmux detach-client -t "$client"
+  ;;
 *)
   exit 0
   ;;

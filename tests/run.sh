@@ -534,6 +534,7 @@ run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_not_contains 'entrypoint publishes no launch badge when status disabled' "$log_contents" $'set-option	-g	@agent_launch_badge'
 assert_not_contains 'entrypoint publishes no summary badge when status disabled' "$log_contents" $'set-option	-g	@agent_summary_badge'
+assert_not_contains 'entrypoint publishes no detach badge when status disabled' "$log_contents" $'set-option	-g	@agent_detach_badge'
 
 # Mouse badges: clickable launch/list ranges plus a MouseDown1Status dispatcher.
 reset_mocks
@@ -541,21 +542,24 @@ run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'entrypoint wraps launch fragment in a clickable range' "$log_contents" $'set-option\t-g\t@agent_launch_badge\t#[range=user|agent_launch][+]#[norange]'
 assert_contains 'entrypoint wraps summary fragment in a clickable range' "$log_contents" $'set-option\t-g\t@agent_summary_badge\t#[range=user|agent_list]#{@agent_status_cache}#[norange]'
+assert_contains 'entrypoint gates the detach badge on managed sessions with a clickable range' "$log_contents" $'set-option\t-g\t@agent_detach_badge\t#{?#{m:agent-*,#{session_name}},#[range=user|agent_detach][x]#[norange],}'
 assert_contains 'entrypoint binds a status mouse dispatcher' "$log_contents" $'bind-key\t-T\troot\tMouseDown1Status'
 assert_contains 'entrypoint mouse dispatcher preserves default status click' "$log_contents" 'switch-client -t ='
 assert_not_contains 'entrypoint mouse badge fragments perform zero forks' "$log_contents" '#('
 
 reset_mocks
-TMUX_MOCK_OPTIONS=$'@agent_status_launch_label=start'
+TMUX_MOCK_OPTIONS=$'@agent_status_launch_label=start\n@agent_status_detach_label=close\n@agent_session_prefix=ai-'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'entrypoint honors a custom launch label' "$log_contents" $'#[range=user|agent_launch]start#[norange]'
+assert_contains 'entrypoint honors a custom detach label and session prefix' "$log_contents" $'set-option\t-g\t@agent_detach_badge\t#{?#{m:ai-*,#{session_name}},#[range=user|agent_detach]close#[norange],}'
 
 reset_mocks
 TMUX_MOCK_OPTIONS=$'@agent_status_mouse=off'
 run_entrypoint >/dev/null
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'entrypoint publishes plain summary fragment when mouse disabled' "$log_contents" $'set-option\t-g\t@agent_summary_badge\t#{@agent_status_cache}'
+assert_contains 'entrypoint publishes an empty detach badge when mouse disabled' "$log_contents" $'set-option\t-g\t@agent_detach_badge\t'
 assert_contains 'entrypoint restores default status click when mouse disabled' "$log_contents" $'bind-key\t-T\troot\tMouseDown1Status\tswitch-client\t-t\t='
 
 # status_click.sh routes ranges to the picker and the launcher entry points.
@@ -572,6 +576,18 @@ run_bash "scripts/status_click.sh agent_launch /dev/pts/9 /tmp/proj @1" >/dev/nu
 log_contents="$(<"$TMUX_LOG")"
 assert_contains 'status_click launch range creates a session for the pane directory' "$log_contents" $'new-session\t-d\t-s'
 assert_contains 'status_click launch range launches in the pane directory' "$log_contents" $'-c\t/tmp/proj'
+
+reset_mocks
+run_bash "scripts/status_click.sh agent_detach /dev/pts/9 /tmp/proj @1" >/dev/null
+log_contents="$(<"$TMUX_LOG")"
+assert_contains 'status_click detach range detaches only the clicked client' "$log_contents" $'detach-client\t-t\t/dev/pts/9'
+assert_not_contains 'status_click detach range never detaches a whole session' "$log_contents" $'detach-client\t-s\t'
+
+reset_mocks
+run_bash "scripts/status_click.sh agent_detach '' /tmp/proj @1" >/dev/null
+assert_eq 'status_click detach range without a client is a no-op' '0' "$?"
+log_contents="$(<"$TMUX_LOG")"
+assert_not_contains 'status_click detach range without a client never detaches' "$log_contents" 'detach-client'
 
 reset_mocks
 run_bash "scripts/status_click.sh other /dev/pts/9 /tmp/proj @1" >/dev/null

@@ -25,6 +25,13 @@ if [ "$status_enabled" = on ]; then
   # #{@agent_status_cache}:
   #   set -g status-right '#{E:@agent_launch_badge} #{E:@agent_summary_badge}'
   launch_label="$(get_tmux_option @agent_status_launch_label '[+]')"
+  detach_label="$(get_tmux_option @agent_status_detach_label '[x]')"
+  # The detach badge is a click-to-close affordance for the agent popup. It must
+  # only appear while the drawing client sits in a managed agent session, so gate
+  # it on the session name matching @agent_session_prefix. Embed the literal
+  # prefix here because the format is evaluated per-client at draw time. The
+  # #{?...}/#{m:...} test is native, so this stays zero-fork.
+  session_prefix="$(agent_session_prefix)"
   if [ "$status_mouse" = on ]; then
     # Wrap each fragment in its own user-defined status range so tmux reports
     # which part was clicked via #{mouse_status_range}. The launch badge is a
@@ -33,9 +40,13 @@ if [ "$status_enabled" = on ]; then
     # expansion, so referencing these fragments stays zero-fork.
     tmux set-option -g @agent_launch_badge "#[range=user|agent_launch]${launch_label}#[norange]"
     tmux set-option -g @agent_summary_badge '#[range=user|agent_list]#{@agent_status_cache}#[norange]'
+    tmux set-option -g @agent_detach_badge "#{?#{m:${session_prefix}*,#{session_name}},#[range=user|agent_detach]${detach_label}#[norange],}"
   else
     tmux set-option -g @agent_launch_badge "$launch_label"
     tmux set-option -g @agent_summary_badge '#{@agent_status_cache}'
+    # Without mouse support the detach badge has no click target and would only
+    # show a misleading close glyph, so publish it empty.
+    tmux set-option -g @agent_detach_badge ''
   fi
 fi
 
@@ -45,7 +56,7 @@ fi
 # ranges. Requires `set -g mouse on`; without it tmux delivers no status clicks.
 if [ "$status_enabled" = on ] && [ "$status_mouse" = on ]; then
   status_click_q=$(printf '%q' "$CURRENT_DIR/scripts/status_click.sh")
-  clicked_agent_range='#{||:#{==:#{mouse_status_range},agent_list},#{==:#{mouse_status_range},agent_launch}}'
+  clicked_agent_range='#{||:#{==:#{mouse_status_range},agent_detach},#{||:#{==:#{mouse_status_range},agent_list},#{==:#{mouse_status_range},agent_launch}}}'
   dispatch_click="run-shell \"$status_click_q '#{mouse_status_range}' '#{client_name}' '#{pane_current_path}' '#{window_id}'\""
   tmux bind-key -T root MouseDown1Status if-shell -F "$clicked_agent_range" "$dispatch_click" "switch-client -t ="
 else

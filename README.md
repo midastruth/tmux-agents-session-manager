@@ -241,6 +241,15 @@ cache is empty. Left-clicking the launch badge runs the launcher for the active
 pane's directory (same as `prefix` + `y`), and left-clicking the summary badge
 opens the picker (same as `prefix` + `u`).
 
+The `@agent_detach_badge` fragment (default label `[x]` from
+`@agent_status_detach_label`) is a click-to-close affordance for the agent
+popup. It only renders while the drawing client is inside a managed agent
+session (its name matches `@agent_session_prefix`), so it stays invisible on
+ordinary panes. Left-clicking it detaches only the clicked client, closing the
+popup while the agent session keeps running in the background (same effect as
+`prefix` + `d`). Place it in the status line of managed sessions, for example
+`set -g status-right '#{E:@agent_detach_badge} #{E:@agent_launch_badge} #{E:@agent_summary_badge}'`.
+
 The plugin binds `MouseDown1Status` and dispatches only its own ranges; clicks
 elsewhere on the status line fall back to tmux's default `switch-client`. The
 range markers add no `#()` expansion, so referencing the fragments stays
@@ -271,6 +280,7 @@ Daemon/status options:
 set -g @agent_status                 'on'
 set -g @agent_status_mouse           'on'
 set -g @agent_status_launch_label    '[+]'
+set -g @agent_status_detach_label    '[x]'
 set -g @agent_status_animate_working 'on'
 set -g @agent_status_show_idle       'off'
 set -g @agent_status_sigil           'agents'
