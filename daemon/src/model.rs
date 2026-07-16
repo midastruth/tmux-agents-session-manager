@@ -153,6 +153,10 @@ struct PaneRow {
     pane_pid: u32,
     pane_title: String,
     configured_tool: String,
+    // Captured in the same list-panes call so screen_display_state can decide a
+    // finished turn is "done" vs "seen idle" without a per-pane display-message
+    // fork on every screen scan.
+    visible: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -430,7 +434,7 @@ impl StateCenter {
                 continue;
             }
             let previous = self.agents.get(&key);
-            let state = self.screen_display_state(previous, detection.state, &row.pane_id);
+            let state = self.screen_display_state(previous, detection.state, row.visible);
             let changed_at = previous
                 .filter(|record| {
                     record.state == state
@@ -487,7 +491,7 @@ impl StateCenter {
         &self,
         previous_record: Option<&AgentRecord>,
         detected_state: AgentState,
-        pane_id: &str,
+        pane_visible: bool,
     ) -> AgentState {
         if detected_state != AgentState::Idle {
             return detected_state;
@@ -501,7 +505,7 @@ impl StateCenter {
         if !matches!(record.state, AgentState::Working | AgentState::Blocked) {
             return AgentState::Idle;
         }
-        if is_pane_visible(&self.server_socket, pane_id) {
+        if pane_visible {
             AgentState::Idle
         } else {
             AgentState::Done
@@ -744,7 +748,7 @@ fn tmux_output(server_socket: &str, args: &[&str]) -> Option<String> {
 }
 
 fn list_pane_rows(server_socket: &str) -> Option<Vec<PaneRow>> {
-    let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}\t#{pane_title}\t#{@agent_tool}";
+    let format = "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}\t#{pane_title}\t#{@agent_tool}\t#{session_attached}\t#{window_active}\t#{pane_active}";
     let output = tmux_output(server_socket, &["list-panes", "-a", "-F", format])?;
     Some(
         output
@@ -757,6 +761,11 @@ fn list_pane_rows(server_socket: &str) -> Option<Vec<PaneRow>> {
                 let pane_pid = fields.next()?.parse::<u32>().ok()?;
                 let pane_title = fields.next().unwrap_or("").to_string();
                 let configured_tool = fields.next().unwrap_or("").to_string();
+                let session_attached = fields.next().unwrap_or("0");
+                let window_active = fields.next().unwrap_or("0");
+                let pane_active = fields.next().unwrap_or("0");
+                let visible =
+                    session_attached != "0" && window_active == "1" && pane_active == "1";
                 Some(PaneRow {
                     session_name,
                     pane_id,
@@ -764,6 +773,7 @@ fn list_pane_rows(server_socket: &str) -> Option<Vec<PaneRow>> {
                     pane_pid,
                     pane_title,
                     configured_tool,
+                    visible,
                 })
             })
             .collect(),
@@ -831,32 +841,6 @@ fn capture_panes_batch(
         rest = &rest[pos + delimiter.len()..];
     }
     Some(map)
-}
-
-fn is_pane_visible(server_socket: &str, pane_id: &str) -> bool {
-    let Some(output) = tmux_output(
-        server_socket,
-        &[
-            "display-message",
-            "-p",
-            "-t",
-            pane_id,
-            "#{session_attached} #{window_active} #{pane_active}",
-        ],
-    ) else {
-        return false;
-    };
-    let mut fields = output.split_whitespace();
-    let Some(session_attached) = fields.next() else {
-        return false;
-    };
-    let Some(window_active) = fields.next() else {
-        return false;
-    };
-    let Some(pane_active) = fields.next() else {
-        return false;
-    };
-    session_attached != "0" && window_active == "1" && pane_active == "1"
 }
 
 fn process_table_snapshot() -> Option<String> {
@@ -1230,6 +1214,32 @@ mod tests {
         let mut state = center();
         state.restore_mirror_row("work\t%2\tcodex\tdone\t123\tg\t7", false);
         assert!(state.agents.is_empty());
+    }
+
+    #[test]
+    fn idle_detection_on_unwatched_working_pane_becomes_done() {
+        // A turn that finishes while the user is not looking at the pane must be
+        // marked done so the badge flags an unseen result. Visibility is now read
+        // from the batched list-panes flag instead of a per-pane fork.
+        let state = center();
+        let previous = AgentRecord {
+            source: Source::Screen,
+            tool: "codex".into(),
+            pane_id: Some("%1".into()),
+            session_name: Some("work".into()),
+            process_generation: None,
+            sequence: 0,
+            state: AgentState::Working,
+            changed_at: SystemTime::now(),
+        };
+        assert_eq!(
+            state.screen_display_state(Some(&previous), AgentState::Idle, false),
+            AgentState::Done
+        );
+        assert_eq!(
+            state.screen_display_state(Some(&previous), AgentState::Idle, true),
+            AgentState::Idle
+        );
     }
 
     #[test]
