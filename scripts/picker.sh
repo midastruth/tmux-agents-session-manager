@@ -22,37 +22,51 @@ export AGENT_SESSION_PREFIX AGENT_DETECT_COMMANDS AGENT_DETECT_WRAPPERS
 # unknown/manual state.
 daemon_records="$("$DIR/daemon.sh" snapshot-picker 2>/dev/null || true)"
 
+# lookup_daemon_state <session|pane> <target>
+# On a match, sets daemon_state and daemon_at in the caller's scope and returns
+# 0; returns 1 with both cleared when no record matches. Writing to caller
+# variables instead of stdout avoids one command-substitution fork per picker
+# row, which dominates rendering cost on large workspaces.
 lookup_daemon_state() {
-  local kind="$1" target="$2" session pane state changed
-  while IFS=$'\037' read -r session pane state changed; do
-    [ -n "$state" ] || continue
-    if { [ "$kind" = session ] && [ "$session" = "$target" ]; } || { [ "$kind" = pane ] && [ "$pane" = "$target" ]; }; then
-      printf '%s\t%s' "$state" "$changed"
+  local kind="$1" target="$2" record_session record_pane record_state record_changed
+  daemon_state=''
+  daemon_at=''
+  while IFS=$'\037' read -r record_session record_pane record_state record_changed; do
+    [ -n "$record_state" ] || continue
+    if { [ "$kind" = session ] && [ "$record_session" = "$target" ]; } ||
+      { [ "$kind" = pane ] && [ "$record_pane" = "$target" ]; }; then
+      daemon_state="$record_state"
+      daemon_at="$record_changed"
       return 0
     fi
   done <<< "$daemon_records"
   return 1
 }
 
+# short_path <absolute-path>
+# Sets disp_path to the home-relative display form. Assigns to a caller variable
+# rather than printing so the picker's per-row loop does not fork a subshell.
 short_path() {
   # shellcheck disable=SC2088 # literal ~ is intentional for display
   case "$1" in
-  "$HOME")   printf '~' ;;
-  "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;;
-  *)          printf '%s' "$1" ;;
+  "$HOME")   disp_path='~' ;;
+  "$HOME"/*) disp_path="~/${1#"$HOME"/}" ;;
+  *)          disp_path="$1" ;;
   esac
 }
 
-# classify <state>  ->  prints "<rank>\t<label>\t<desc>"
-# label is the padded status badge; desc is the trailing note shown after the
-# path. Shared so managed sessions and manual panes render identically.
+# classify <state>
+# Sets rank, label, and desc in the caller's scope. label is the padded status
+# badge; desc is the trailing note shown after the path. Shared so managed
+# sessions and manual panes render identically. Assigning to caller variables
+# instead of printing avoids a fork per row.
 classify() {
   case "$1" in
-  blocked) printf '0\t🔴 blocked\tneeds input' ;;
-  done)    printf '1\t🔵 done   \tfinished, unseen' ;;
-  idle)    printf '2\t🟢 idle   \twaiting for prompt' ;;
-  working) printf '3\t🟡 working\tactively running' ;;
-  *)       printf '2\t⚪ unknown\tno status extension' ;;
+  blocked) rank=0; label='🔴 blocked'; desc='needs input' ;;
+  done)    rank=1; label='🔵 done   '; desc='finished, unseen' ;;
+  idle)    rank=2; label='🟢 idle   '; desc='waiting for prompt' ;;
+  working) rank=3; label='🟡 working'; desc='actively running' ;;
+  *)       rank=2; label='⚪ unknown'; desc='no status extension' ;;
   esac
 }
 
@@ -69,20 +83,25 @@ picker_now() {
 }
 
 # humanize_ago <epoch-seconds> <now> -> compact age like 45s / 12m / 3h / 2d.
-# Falls back to '-' when the timestamp is missing or non-numeric.
+# Sets ago in the caller's scope, falling back to '-' when the timestamp is
+# missing or non-numeric. Assigns to a caller variable rather than printing so
+# the per-row loop avoids a command-substitution fork.
 humanize_ago() {
   local at="$1" now="$2" delta
-  [[ "$at" =~ ^[0-9]+$ ]] || { printf '%s' '-'; return; }
+  if ! [[ "$at" =~ ^[0-9]+$ ]]; then
+    ago='-'
+    return
+  fi
   delta=$((now - at))
   [ "$delta" -lt 0 ] && delta=0
   if [ "$delta" -lt 60 ]; then
-    printf '%ds' "$delta"
+    ago="${delta}s"
   elif [ "$delta" -lt 3600 ]; then
-    printf '%dm' "$((delta / 60))"
+    ago="$((delta / 60))m"
   elif [ "$delta" -lt 86400 ]; then
-    printf '%dh' "$((delta / 3600))"
+    ago="$((delta / 3600))h"
   else
-    printf '%dd' "$((delta / 86400))"
+    ago="$((delta / 86400))d"
   fi
 }
 
@@ -95,41 +114,31 @@ pane_still_exists() {
   return 1
 }
 
-# split_classify <state> -> sets $rank $label $desc from classify output.
-split_classify() {
-  local info rest
-  info=$(classify "$1")
-  rank=${info%%$'\t'*}
-  rest=${info#*$'\t'}
-  label=${rest%%$'\t'*}
-  desc=${rest#*$'\t'}
-}
-
 emit_managed_rows() {
-  local now s state at path cmd tool instance name rank label desc ago daemon_state
+  local now s state at path cmd tool instance name rank label desc ago disp_path daemon_state daemon_at
   now=$(picker_now)
   tmux list-sessions -F '#{session_name}	#{@agent_state}	#{@agent_state_at}	#{pane_current_path}	#{@agent_tool}	#{pane_current_command}	#{@agent_instance}' 2>/dev/null |
     while IFS=$'\t' read -r s state at path tool cmd instance; do
       is_managed_session "$s" || continue
       name=${path##*/}
-      daemon_state="$(lookup_daemon_state session "$s" || true)"
-      if [ -n "$daemon_state" ]; then
-        state="${daemon_state%%$'\t'*}"
-        at="${daemon_state#*$'\t'}"
+      if lookup_daemon_state session "$s"; then
+        state="$daemon_state"
+        at="$daemon_at"
       fi
       # The agent recorded at launch, falling back to whatever runs in the pane.
       [ -n "$tool" ] || tool=${cmd##*/}
       [ -n "$instance" ] && tool="${tool}-${instance}"
-      split_classify "$state"
-      ago="$(humanize_ago "$at" "$now")"
+      classify "$state"
+      humanize_ago "$at" "$now"
+      short_path "$path"
       # rank \t kind \t target \t label \t name \t age \t path \t desc \t tool
       printf '%s\tsession\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$rank" "$s" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$tool"
+        "$rank" "$s" "$label" "$name" "$ago" "$disp_path" "$desc" "$tool"
     done
 }
 
 emit_manual_rows() {
-  local now panes s pane cmd ppid path state at opts line base name rank label desc ago daemon_state
+  local now panes s pane cmd ppid path state at opts line base name rank label desc ago disp_path daemon_state daemon_at
   now=$(picker_now)
   panes="$(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_command}	#{pane_pid}	#{pane_current_path}' 2>/dev/null)" || return 1
 
@@ -157,10 +166,9 @@ emit_manual_rows() {
     base="$(resolve_pane_agent "${cmd##*/}" "$ppid")" || continue
     [ -n "$base" ] || continue
     name=${path##*/}
-    daemon_state="$(lookup_daemon_state pane "$pane" || true)"
-    if [ -n "$daemon_state" ]; then
-      state="${daemon_state%%$'\t'*}"
-      at="${daemon_state#*$'\t'}"
+    if lookup_daemon_state pane "$pane"; then
+      state="$daemon_state"
+      at="$daemon_at"
     else
       # The tmux mirror is the daemon's restart/recovery snapshot and remains a
       # reliable picker fallback while the daemon client is unavailable.
@@ -181,13 +189,14 @@ emit_manual_rows() {
       done <<< "$opts"
     fi
     if [ -n "$state" ]; then
-      split_classify "$state"
+      classify "$state"
     else
       rank=2; label='🟣 manual '; desc="pane running $base"
     fi
-    ago="$(humanize_ago "$at" "$now")"
+    humanize_ago "$at" "$now"
+    short_path "$path"
     printf '%s\tpane\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$rank" "$pane" "$label" "$name" "$ago" "$(short_path "$path")" "$desc" "$base"
+      "$rank" "$pane" "$label" "$name" "$ago" "$disp_path" "$desc" "$base"
   done <<< "$panes"
 }
 
